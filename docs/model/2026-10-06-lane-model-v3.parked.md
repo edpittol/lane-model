@@ -326,3 +326,4 @@ V3 started on 2026-10-06 as a copy of V2 as finished that day. Each change to V3
 | The safe-copy check fetches the merged pull request's head from the Git host | Parked 12.5, 12.7 | Decided 2026-10-08 (Q18) |
 | The warning names the step that will refuse next | Section 7.1 | Decided 2026-10-08 (Q19) |
 | Bettrbyus landing cell: squash and merge commit, so catch-up by merge | Appendix A | Decided 2026-10-08 (Q20) |
+| A person is never gone: they leave a seat only by Pause or Writer ends, whatever they act from. Only a script ends with its process. Pausing stays the runner's own responsibility | Section 1, Seat; section 7, Pause | Decided 2026-10-09 |

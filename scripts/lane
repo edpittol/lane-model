@@ -273,6 +273,8 @@ class Project:
 
     def seat_alive(self, seat):
         """(alive, which test decided). Pid and start time first; heartbeat only when no pid is known."""
+        if seat.get("kind") == "person":
+            return True, "a person leaves only by pause or release"
         pid = seat.get("pid")
         if pid:
             start = proc_start(pid)

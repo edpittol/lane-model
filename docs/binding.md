@@ -35,7 +35,7 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | Capability | Has it | Evidence |
 |---|---|---|
 | Refuse removal of a lane worktree outside teardown | Partly | `ExitWorktree remove` is refused by the hook (tested). `git worktree remove`, `rm -rf` and the exit prompt's remove cannot be refused and leave a Leftover. `WorktreeRemove` runs teardown with its refusals (unit; its input field name is a guess) |
-| Each runner signals its end | Sessions only | `SessionEnd` pauses the session's lanes and releases its writer seat (tested, reason `other`). A person or script that dies leaves a Runaway lane |
+| Each runner signals its end | Sessions only | `SessionEnd` pauses the session's lanes and releases its writer seat (tested, reason `other`). A script that dies leaves a Runaway lane. A person ends only by `pause` or `release`, so closing a terminal ends nothing |
 | Record runner, writer and liveness | Yes | Lane tool. Session pid found through an undocumented harness session record or an ancestor command line carrying the session id (tested; which of the two answered was not recorded) |
 | Find every process of a lane | Mostly | `--lane-id` on the runtime's command line, plus its descendants. A process that detaches and reparents to init is missed (gap L2) |
 | Refuse a write in the main worktree | Mostly | Edit, Write, NotebookEdit refused (tested). Bash writing shapes refused (unit; the model in the real session declined to try). Holes listed in `AGENTS.md` |
@@ -63,6 +63,6 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | L2 | A runtime process that detaches from the lane's process tree is not traced to its lane |
 | L3 | A lane removed by the exit prompt, `git worktree remove` or `rm` becomes a Leftover. The session-end hook tears it down by name only for lanes in the session ledger; the rest wait for `list` and `housekeeping` |
 | L4 | The `WorktreeRemove` input field is assumed to be `worktree_path`; the hook never fired in the tests |
-| L5 | A person's identity is their login name, and liveness is the shell that ran the command. Pausing from another terminal as the same person is allowed. The model does not say whether a person is a login or a shell |
+| L5 | A person is their login name and is never gone, so only that person pauses their runtime or empties their seats. A person who never comes back blocks Stop and teardown of their lanes, and nobody else can lift it, the human's word included |
 | L6 | The session pid sources are undocumented harness behaviour and may change |
 | L7 | Bash writes inside a lane do not take the writer seat |

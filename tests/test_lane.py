@@ -128,7 +128,7 @@ class Runtime(Base):
         self.ok("pause", "alpha-one", "--as", "script", "--label", "nightly")
 
     def test_runner_gone_is_runaway_and_stop_recovers(self):
-        self.ok("start", "alpha-one")
+        self.ok("start", "alpha-one", "--as", "script", "--label", "nightly")
         dead = self.dead_pid()
         self.edit_record("alpha-one", lambda r: r["seats"]["runner"].update(pid=dead))
         self.assertEqual(self.state("alpha-one"), "Runaway")
@@ -137,6 +137,16 @@ class Runtime(Base):
         self.ok("stop", "alpha-one")
         self.assertEqual(self.state("alpha-one"), "Paused")
         self.ok("start", "alpha-one"); self.ok("pause", "alpha-one")
+
+    def test_person_outlives_the_shell_that_started_it(self):
+        self.ok("start", "alpha-one", "--as", "person", "--label", "ed")
+        dead = self.dead_pid()
+        self.edit_record("alpha-one", lambda r: r["seats"]["runner"].update(pid=dead))
+        self.assertEqual(self.state("alpha-one"), "Running")
+        self.assertIn("Running, not Runaway", self.refused("stop", "alpha-one"))
+        self.assertIn("only its runner pauses", self.refused("pause", "alpha-one", "--as", "person", "--label", "bo"))
+        self.ok("pause", "alpha-one", "--as", "person", "--label", "ed")
+        self.assertEqual(self.state("alpha-one"), "Paused")
 
     def test_pause_all_pauses_only_my_lanes(self):
         self.ok("create", "beta-two")
@@ -157,13 +167,20 @@ class Seats(Base):
         super().setUp(); self.ok("create", "alpha-one")
 
     def test_one_writer_stale_replaced(self):
-        self.ok("write", "alpha-one", "--as", "person", "--label", "ed")
-        self.assertIn("taken by ed", self.refused("write", "alpha-one", "--as", "script", "--label", "bot"))
+        self.ok("write", "alpha-one", "--as", "script", "--label", "fixer")
+        self.assertIn("taken by fixer", self.refused("write", "alpha-one", "--as", "script", "--label", "bot"))
         dead = self.dead_pid()
         self.edit_record("alpha-one", lambda r: r["seats"]["writer"].update(pid=dead))
         self.assertIn("stale writer seat", self.ok("list").stdout)
         self.ok("write", "alpha-one", "--as", "script", "--label", "bot")
         self.ok("release", "alpha-one", "--as", "script", "--label", "bot")
+
+    def test_person_writer_seat_outlives_the_shell(self):
+        self.ok("write", "alpha-one", "--as", "person", "--label", "ed")
+        dead = self.dead_pid()
+        self.edit_record("alpha-one", lambda r: r["seats"]["writer"].update(pid=dead))
+        self.assertIn("taken by ed", self.refused("write", "alpha-one", "--as", "script", "--label", "bot"))
+        self.ok("release", "alpha-one", "--as", "person", "--label", "ed")
 
     def test_only_holder_releases(self):
         self.ok("write", "alpha-one", "--as", "person", "--label", "ed")
@@ -329,7 +346,7 @@ class Sync(Base):
 class Housekeeping(Base):
     def test_tears_down_finished_and_reports_the_rest(self):
         self.ok("create", "done-one"); self.ok("create", "open-two"); self.ok("create", "run-three")
-        self.ok("start", "run-three")
+        self.ok("start", "run-three", "--as", "script", "--label", "nightly")
         self.prs("done-one", {"number": 1, "state": "MERGED", "headRefOid": "x", "baseRefName": "main"})
         self.prs("run-three", {"number": 2, "state": "MERGED", "headRefOid": "x", "baseRefName": "main"})
         dead = self.dead_pid()
