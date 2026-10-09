@@ -2,7 +2,7 @@
 import json, os, subprocess, sys, unittest
 from pathlib import Path
 
-from test_lane import Base, sh
+from test_lane import ROOT, Base, sh
 
 
 class Hook(Base):
@@ -132,11 +132,19 @@ class Lifecycle(Hook):
 
     def test_worktree_remove_runs_teardown_with_its_refusals(self):
         self.ok("create", "alpha-one")
-        p = self.hook("WorktreeRemove", worktree_path=str(self.wt("alpha-one")))
+        # The input shape a live clean-exit removal sent: cwd is the lane itself.
+        wt = self.wt("alpha-one")
+        p = self.hook("WorktreeRemove", cwd=wt, prompt_id="p-1", worktree_path=str(wt))
         self.assertEqual(p.returncode, 2); self.assertIn("finish rule not met", p.stderr)
         self.prs("alpha-one", {"number": 1, "state": "CLOSED", "headRefOid": "x", "baseRefName": "main"})
-        self.assertEqual(self.hook("WorktreeRemove", worktree_path=str(self.wt("alpha-one"))).returncode, 0)
-        self.assertFalse(self.wt("alpha-one").exists())
+        self.assertEqual(self.hook("WorktreeRemove", cwd=wt, prompt_id="p-1", worktree_path=str(wt)).returncode, 0)
+        self.assertFalse(wt.exists())
+
+    def test_worktree_remove_without_worktree_path_keeps_the_lane(self):
+        self.ok("create", "alpha-one")
+        self.prs("alpha-one", {"number": 1, "state": "CLOSED", "headRefOid": "x", "baseRefName": "main"})
+        self.assertEqual(self.hook("WorktreeRemove", path=str(self.wt("alpha-one"))).returncode, 2)
+        self.assertTrue(self.wt("alpha-one").exists())
 
     def test_heartbeat_refreshes_only_old_beats(self):
         self.ok("create", "alpha-one")
@@ -152,6 +160,23 @@ class Lifecycle(Hook):
         self.edit_record("alpha-one", lambda r: r["seats"]["writer"].update(heartbeat="2020-01-01T00:00:00Z"))
         out = self.ok("list").stdout
         self.assertIn("stale writer seat", out); self.assertIn("heartbeat", out)
+
+
+class Wiring(Hook):
+    def run_wired(self, project_dir):
+        settings = json.loads((ROOT / ".claude" / "settings.json").read_text())
+        cmds = {h["command"] for groups in settings["hooks"].values() for g in groups for h in g["hooks"]}
+        self.assertEqual(len(cmds), 1)
+        return subprocess.run(["/bin/sh", "-c", cmds.pop()], input=json.dumps({"hook_event_name": "Probe", "cwd": str(self.main)}),
+                              text=True, capture_output=True, env={**self.env, "CLAUDE_PROJECT_DIR": str(project_dir)})
+
+    def test_every_hook_runs_the_main_worktree_copy_even_after_its_lane_is_gone(self):
+        self.ok("create", "alpha-one")
+        (self.wt("alpha-one") / "scripts" / "lane-hook").write_text("#!/bin/sh\nexit 7\n")
+        for d in (self.main, self.wt("alpha-one")):
+            p = self.run_wired(d); self.assertEqual(p.returncode, 0, p.stderr)
+        self.git("worktree", "remove", "--force", str(self.wt("alpha-one")))
+        p = self.run_wired(self.wt("alpha-one")); self.assertEqual(p.returncode, 0, p.stderr)
 
 
 if __name__ == "__main__":
