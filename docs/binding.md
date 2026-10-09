@@ -39,7 +39,7 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | Record runner, writer and liveness | Yes | Lane tool. Session pid found through an undocumented harness session record or an ancestor command line carrying the session id (tested; which of the two answered was not recorded) |
 | Find every process of a lane | Mostly | `--lane-id` on the runtime's command line, plus its descendants. A process that detaches and reparents to init is missed (gap L2) |
 | Refuse a write in the main worktree | Mostly | Edit, Write, NotebookEdit refused (tested). Bash writing shapes refused (unit; the model in the real session declined to try). Holes listed in `AGENTS.md` |
-| Refuse a write in a lane by someone other than its writer | Edit, Write, NotebookEdit | The first edit takes the writer seat, a second session is refused (unit). Bash writes in a lane are not covered |
+| Refuse a write in a lane by someone other than its writer | Mostly | The first edit takes the writer seat, a second session is refused (unit). A Bash command of a writing shape takes the seat of the lane it runs in and of every lane a path in it names (unit). `lane prep` holds a catch-up while another live writer sits in the seat (unit). Holes in gap L7 |
 | Session signals its end with reason and working directory | Yes | Tested |
 | Harness records which session is in which worktree | No | The lane tool keeps the ledger itself |
 
@@ -66,5 +66,5 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | L3 | A lane removed by the exit prompt, `git worktree remove` or `rm` becomes a Leftover. The session-end hook tears it down by name only for lanes in the session ledger; the rest wait for `list` and `housekeeping` |
 | L5 | A person's identity is their login name, and liveness is the shell that ran the command. Pausing from another terminal as the same person is allowed. The model does not say whether a person is a login or a shell |
 | L6 | The session pid sources are undocumented harness behaviour and may change |
-| L7 | Bash writes inside a lane do not take the writer seat |
+| L7 | A Bash write the shapes miss (the I8 holes in `AGENTS.md`) takes no writer seat, and neither does a person writing in a terminal without `lane write`. A writing shape in a lane takes the seat even when it writes outside the lane, such as a redirect to `/tmp` |
 | L8 | A `claude --worktree` session has the lane as its project, so it probably reads `.claude/settings.json` from the lane branch. A lane that edits the wiring may change which hooks guard it. Not measured |

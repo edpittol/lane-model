@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import shlex
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -101,6 +102,21 @@ def shell_writes(cmd):
     return None
 
 
+def named_lanes(cmd, cwd, wtroot):
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        words = cmd.split()
+    names = set()
+    for w in words:
+        w = w.split("=", 1)[-1] if w.startswith("-") else w
+        if "/" in w or w in (".", ".."):
+            parts = under(Path(os.path.normpath(cwd / Path(w).expanduser())), wtroot)
+            if parts and (wtroot / parts[0]).is_dir():
+                names.add(parts[0])
+    return names
+
+
 def pre_tool_use():
     tool, ti = data.get("tool_name", ""), data.get("tool_input", {}) or {}
     if tool == "ExitWorktree":
@@ -130,9 +146,21 @@ def pre_tool_use():
         deny("The main worktree is not a workspace (I8): make this change in a lane. `scripts/lane create <name>` and work in the worktree it prints.")
     if tool == "Bash":
         cwd = real(data.get("cwd") or ".")
-        if under(cwd, P.main) is None or under(cwd, P.wtroot):
+        if under(cwd, P.main) is None:
             return
         shape = shell_writes(ti.get("command", ""))
+        here = under(cwd, P.wtroot)
+        if here:
+            # I12: a write in a lane takes its writer seat, like Edit does. The shape cannot tell where the write lands,
+            # so the lane the command runs in counts, and so does every lane a path in it names.
+            if shape:
+                me = session_actor(data["session_id"])
+                try:
+                    for name in sorted({here[0]} | named_lanes(ti.get("command", ""), cwd, P.wtroot)):
+                        P.take_seat(name, "writer", me)
+                except lane.Refuse as e:
+                    deny(f"This command writes ({shape}) in a lane whose writer seat is taken.\n" + "\n".join(e.reasons))
+            return
         if shape:
             deny(f"This command writes ({shape}) while the working directory is the main worktree, which is not a workspace (I8). "
                  "Work in a lane. The guard knows shell shapes only; see AGENTS.md for what it cannot see.")
@@ -159,7 +187,7 @@ def session_start():
         if parts:
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
-                outcome, line = P.prep(parts[0])
+                outcome, line = P.prep(parts[0], actor=session_actor(data["session_id"]))
             lines.append(f"Prep of {parts[0]}: {outcome}: {line}")
             if buf.getvalue().strip():
                 lines.append(buf.getvalue().strip())
@@ -215,7 +243,7 @@ def cwd_changed():
         P = project()
         parts = under(real(data.get("new_cwd") or "."), P.wtroot)
         if parts:
-            P.prep(parts[0])
+            P.prep(parts[0], actor=session_actor(data["session_id"]))
     except lane.Refuse:
         pass
 
@@ -235,7 +263,7 @@ elif event == "PostToolUse" and data.get("tool_name") == "EnterWorktree":
         if parts:
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
-                outcome, line = P.prep(parts[0])
+                outcome, line = P.prep(parts[0], actor=session_actor(data["session_id"]))
             note = f"Prep of {parts[0]}: {outcome}: {line}" + (f"\n{buf.getvalue().strip()}" if buf.getvalue().strip() else "")
             out({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}})
 elif event in ("UserPromptSubmit", "PostToolUse", "Stop"):
