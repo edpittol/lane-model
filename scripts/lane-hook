@@ -202,7 +202,7 @@ def worktree_create():
 
 
 def worktree_remove():
-    path = data.get("worktree_path") or data.get("path") or ""
+    path = data.get("worktree_path", "")
     try:
         project().teardown(Path(path).name)
     except lane.Refuse as e:

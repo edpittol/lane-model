@@ -34,7 +34,7 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 
 | Capability | Has it | Evidence |
 |---|---|---|
-| Refuse removal of a lane worktree outside teardown | Partly | `ExitWorktree remove` is refused by the hook (tested). `git worktree remove`, `rm -rf` and the exit prompt's remove cannot be refused and leave a Leftover. `WorktreeRemove` runs teardown with its refusals (unit; its input field name is a guess) |
+| Refuse removal of a lane worktree outside teardown | Partly | `ExitWorktree remove` is refused by the hook (tested). Removal at session exit fires `WorktreeRemove`, which runs teardown with its refusals and keeps the lane when teardown refuses (measured, for a lane made by `WorktreeCreate`). `git worktree remove` and `rm -rf` cannot be refused and leave a Leftover |
 | Each runner signals its end | Sessions only | `SessionEnd` pauses the session's lanes and releases its writer seat (tested, reason `other`). A person or script that dies leaves a Runaway lane |
 | Record runner, writer and liveness | Yes | Lane tool. Session pid found through an undocumented harness session record or an ancestor command line carrying the session id (tested; which of the two answered was not recorded) |
 | Find every process of a lane | Mostly | `--lane-id` on the runtime's command line, plus its descendants. A process that detaches and reparents to init is missed (gap L2) |
@@ -51,6 +51,7 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | Does `EnterWorktree` with a path fire anything? | No `WorktreeCreate`, no `CwdChanged`. Prep runs from the `PostToolUse` hook of `EnterWorktree` instead (unit) |
 | Does subagent worktree isolation fire `WorktreeCreate`? | Yes, with name `agent-<hex>` and no `agent_id`. The hook refuses by that name and the agent sees the reason |
 | Do subagent hooks carry the parent's `session_id`? | Yes, with `agent_id` and `agent_type` added. A subagent therefore sits in its session's seats |
+| What does `WorktreeRemove` send, and when? | `worktree_path`, the lane's absolute path, with `cwd` inside the lane. A clean `claude --worktree <name>` session fires it at exit without asking, though it is named. Exit 2 from the hook keeps the directory and the lane |
 | Does `ExitWorktree remove` reach the hook? | Only with `discard_changes: true`. Without it the harness refuses on its own for a hook-created worktree |
 | Does a session see the lane environment? | Yes. `SessionStart` exports `LANE_SESSION_ID`, `LANE_SESSION_PID` and its start time to every later Bash command through the env file |
 | Does the harness block main-worktree writes by itself? | Yes for a session that entered a worktree. The lane hooks matter for sessions that did not |
@@ -62,7 +63,6 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | L1 | Stacked lane whose parent was squashed or rebased, caught up by replay: 12.4 asks for the parent's merged head to be read and only the lane's own commits replayed. Not implemented. Matters only where the repository allows rebase landing, which this one does not |
 | L2 | A runtime process that detaches from the lane's process tree is not traced to its lane |
 | L3 | A lane removed by the exit prompt, `git worktree remove` or `rm` becomes a Leftover. The session-end hook tears it down by name only for lanes in the session ledger; the rest wait for `list` and `housekeeping` |
-| L4 | The `WorktreeRemove` input field is assumed to be `worktree_path`; the hook never fired in the tests |
 | L5 | A person's identity is their login name, and liveness is the shell that ran the command. Pausing from another terminal as the same person is allowed. The model does not say whether a person is a login or a shell |
 | L6 | The session pid sources are undocumented harness behaviour and may change |
 | L7 | Bash writes inside a lane do not take the writer seat |
