@@ -336,6 +336,15 @@ class Sync(Base):
         self.assertIn("Replayed", self.prep().stdout)
         self.assertEqual(self.git("rev-list", "--merges", "--count", "origin/main..HEAD", cwd=self.wt("alpha-one")), "0")
 
+    def test_prep_holds_under_another_live_writer_and_runs_for_the_writer(self):
+        self.ok("write", "alpha-one", "--as", "person", "--label", "ed")
+        self.land("landed.txt", "l\n")
+        p = self.prep()
+        self.assertEqual(p.returncode, 1); self.assertIn("Held", p.stdout); self.assertIn("ed (person)", p.stdout)
+        self.assertFalse((self.wt("alpha-one") / "landed.txt").exists())
+        self.assertIn("Moved", self.lane("prep", "alpha-one", USER="ed").stdout)
+        self.assertTrue((self.wt("alpha-one") / "landed.txt").exists())
+
     def test_prep_warns_when_another_runner_runs_it(self):
         self.ok("start", "alpha-one", "--as", "script", "--label", "nightly")
         p = self.prep()

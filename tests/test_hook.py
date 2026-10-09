@@ -63,9 +63,30 @@ class BashGuard(Hook):
                     "python3 scripts/lane teardown abc", "echo 'x > y'", "git diff > /dev/null"):
             self.assertEqual(self.bash(cmd), "allow", cmd)
 
-    def test_inside_a_lane_nothing_is_refused(self):
+    def test_a_write_in_a_lane_takes_the_writer_seat_and_a_second_session_is_refused(self):
         self.ok("create", "alpha-one")
-        self.assertEqual(self.bash("echo hi > x.txt && rm f", cwd=self.wt("alpha-one")), "allow")
+        w = self.wt("alpha-one")
+        self.assertEqual(self.bash("echo hi > x.txt && rm f", cwd=w), "allow")
+        self.assertEqual(self.listing()[0]["writer"]["session_id"], "sess-aaaa-1111")
+        for cmd in ("sed -i s/a/b/ app.txt", "git commit -m x", "touch y"):
+            d, why = self.decision(self.hook("PreToolUse", sid="sess-bbbb-2222", cwd=w, tool_name="Bash", tool_input={"command": cmd}))
+            self.assertEqual(d, "deny", cmd); self.assertIn("sess-aaa", why)
+        for cmd in ("git status", "cat app.txt", "git log | head", "scripts/lane list"):
+            d, _ = self.decision(self.hook("PreToolUse", sid="sess-bbbb-2222", cwd=w, tool_name="Bash", tool_input={"command": cmd}))
+            self.assertEqual(d, "allow", cmd)
+
+    def test_reading_in_a_lane_takes_no_seat(self):
+        self.ok("create", "alpha-one")
+        self.assertEqual(self.bash("git status && cat app.txt", cwd=self.wt("alpha-one")), "allow")
+        self.assertIsNone(self.listing()[0]["writer"])
+
+    def test_a_write_naming_another_lane_takes_that_lanes_seat_too(self):
+        self.ok("create", "alpha-one"); self.ok("create", "beta-two")
+        self.ok("write", "beta-two", "--as", "person", "--label", "ed")
+        d = self.bash(f"cp app.txt {self.wt('beta-two')}/app.txt", cwd=self.wt("alpha-one"))
+        self.assertEqual(d, "deny")
+        self.assertEqual(self.bash("rm -f ../beta-two/app.txt", cwd=self.wt("alpha-one")), "deny")
+        self.assertEqual(self.bash("git -C ../beta-two status", cwd=self.wt("alpha-one")), "allow")
 
     def test_the_named_holes_really_are_holes(self):
         for cmd in ("python3 -c \"open('x','w')\"", "bash -c 'echo > x'", "find . -name '*.tmp' -delete"):

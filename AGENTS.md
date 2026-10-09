@@ -18,7 +18,7 @@ This project implements the lane model (`docs/model/`). It also uses it: the mai
 | `start <name>` / `resume <name>` | Start the runtime and become its runner. `resume` preps first |
 | `pause [<name> \| --all]` | Stop the runtimes you run. Data stays |
 | `stop <name>` | Stop the runtime of a Runaway lane (no live runner) |
-| `write <name>` / `release <name>` | Take or empty the writer seat. The edit hooks take it for you |
+| `write <name>` / `release <name>` | Take or empty the writer seat. The edit hooks, and a Bash command that writes by a known shape, take it for you |
 | `seats <name>` | Show runner, writer and runtime |
 | `list` | Every lane, Leftover and anomaly, each with its fix |
 | `teardown <name>` | Remove the lane, only after every check passes |

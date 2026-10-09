@@ -470,7 +470,7 @@ class Project:
         return info
 
     # ----- sync with base (section 12.4 of the parked parts)
-    def sync(self, name, flatten=False):
+    def sync(self, name, flatten=False, actor=None):
         wt = self.wt(name)
         ad = self.admin_dir(name)
         for marker, op in (("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"),
@@ -497,6 +497,9 @@ class Project:
         remote_ahead = has_remote and not anc(rb, "HEAD")
         if anc(ob, "HEAD") and not remote_ahead:
             return "Current", f"{name} already contains {base}"
+        w = (self.read_record(name) or {}).get("seats", {}).get("writer")
+        if w and not (actor and same_actor(w, actor)) and self.seat_alive(w)[0]:
+            return "Held", f"{name} needs a catch-up with {base}, which changes its files, but its writer is {self.fmt_seat(w)} (I12); the writer runs lane prep {name}"
         orig = g("rev-parse", "HEAD").stdout.strip()
         if anc("HEAD", ob) and not remote_ahead:
             m = g("merge", "--ff-only", ob)
@@ -557,14 +560,14 @@ class Project:
         say(f"prep: {out}: {line}")
         return self.wt(name)
 
-    def prep(self, name, flatten=False):
+    def prep(self, name, flatten=False, actor=None):
         self.require_wt(name)
         self.klass(name)
         info = self.inspect(name, ps_table(), host=False)
         r = info["runner"]
         if (info["procs"] or r) and not (r and not info["runner_alive"] and not info["procs"]):
             say(self.warning(info, "start runtime (resume) will refuse unless you are its runner"))
-        return self.sync(name, flatten)
+        return self.sync(name, flatten, actor)
 
     def require_wt(self, name):
         if not self.wt(name).is_dir():
@@ -866,11 +869,11 @@ def main(argv=None):
         if a.cmd == "create":
             print(P.create(a.name))
         elif a.cmd == "prep":
-            out, line = P.prep(a.name, a.flatten); print(f"{out}: {line}")
+            out, line = P.prep(a.name, a.flatten, actor_from_env()); print(f"{out}: {line}")
             return 0 if out != "Held" else 1
         elif a.cmd in ("start", "resume"):
             if a.cmd == "resume":
-                out, line = P.prep(a.name, a.flatten); say(f"prep: {out}: {line}")
+                out, line = P.prep(a.name, a.flatten, actor_from_env(a.kind, a.label)); say(f"prep: {out}: {line}")
                 if out == "Held":
                     raise Refuse(f"prep held: {line}")
             P.start(a.name, actor_from_env(a.kind, a.label))
