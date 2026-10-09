@@ -13,7 +13,7 @@ Appendix A of the model says every project keeps its binding with its workflow d
 | Lane classes | One, `pull-request`, the default, so no lane is marked. Declared in `lanes.toml` |
 | Lane name | `[a-z0-9]+(-[a-z0-9]+)*`, 3 to 40 characters. Branch, directory and name are the same string |
 | Binding restrictions | A session may run several lanes. A subagent acts as its session |
-| Agent harness | Claude Code, hooks in `.claude/settings.json`, one entry point `scripts/lane-hook` |
+| Agent harness | Claude Code, hooks in `.claude/settings.json`, one entry point `scripts/lane-hook`. Every hook runs the main worktree's copy: the command cuts `$CLAUDE_PROJECT_DIR` at `/.claude/worktrees/`, so it must change with the worktree location |
 | Lane tool | `scripts/lane` |
 | Seats | `lane.json` in the lane worktree's own Git directory (`.git/worktrees/<n>/lane.json`), written atomically under a lock. Holds runner, writer, starting point, port |
 | Roster | `lane.<name>.class` and `.created` in the Git config, so a branch traces to its lane after the worktree is gone |
@@ -54,6 +54,7 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | Does `ExitWorktree remove` reach the hook? | Only with `discard_changes: true`. Without it the harness refuses on its own for a hook-created worktree |
 | Does a session see the lane environment? | Yes. `SessionStart` exports `LANE_SESSION_ID`, `LANE_SESSION_PID` and its start time to every later Bash command through the env file |
 | Does the harness block main-worktree writes by itself? | Yes for a session that entered a worktree. The lane hooks matter for sessions that did not |
+| Where does a `claude --worktree` session run its hooks from? | `$CLAUDE_PROJECT_DIR` is the lane, so a command built on it ran the lane branch's copy of the hook. After teardown at exit, `SessionEnd` found no script and failed (seen by hand in an interactive session, 2026-10-09). Hence the cut to the main worktree |
 
 ## Open gaps
 
@@ -66,3 +67,4 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | L5 | A person's identity is their login name, and liveness is the shell that ran the command. Pausing from another terminal as the same person is allowed. The model does not say whether a person is a login or a shell |
 | L6 | The session pid sources are undocumented harness behaviour and may change |
 | L7 | Bash writes inside a lane do not take the writer seat |
+| L8 | A `claude --worktree` session has the lane as its project, so it probably reads `.claude/settings.json` from the lane branch. A lane that edits the wiring may change which hooks guard it. Not measured |
