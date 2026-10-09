@@ -227,6 +227,17 @@ if event in handlers:
         handlers[event]()
     except lane.Refuse as e:
         print("; ".join(e.reasons), file=sys.stderr)
+elif event == "PostToolUse" and data.get("tool_name") == "EnterWorktree":
+    # Entering an existing lane by path fires no WorktreeCreate and no CwdChanged, so prep runs here.
+    with contextlib.suppress(lane.Refuse, OSError):
+        P = project()
+        parts = under(real(data.get("cwd") or "."), P.wtroot)
+        if parts:
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                outcome, line = P.prep(parts[0])
+            note = f"Prep of {parts[0]}: {outcome}: {line}" + (f"\n{buf.getvalue().strip()}" if buf.getvalue().strip() else "")
+            out({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}})
 elif event in ("UserPromptSubmit", "PostToolUse", "Stop"):
     with contextlib.suppress(lane.Refuse, OSError):
         project().heartbeat(data["session_id"])

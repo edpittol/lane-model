@@ -73,6 +73,14 @@ class BashGuard(Hook):
 
 
 class Lifecycle(Hook):
+    def test_entering_an_existing_lane_preps_it_and_tells_the_session(self):
+        self.ok("create", "alpha-one")
+        self.ok("start", "alpha-one", "--as", "script", "--label", "nightly")
+        p = self.hook("PostToolUse", cwd=self.wt("alpha-one"), tool_name="EnterWorktree", tool_input={"path": str(self.wt("alpha-one"))})
+        d, ctx = self.decision(p)
+        self.assertIn("Prep of alpha-one: Current", ctx); self.assertIn("nightly", ctx); self.assertIn("will refuse", ctx)
+        self.ok("pause", "alpha-one", "--as", "script", "--label", "nightly")
+
     def test_exit_worktree_remove_is_refused_keep_is_allowed(self):
         self.assertEqual(self.tool("ExitWorktree", action="remove")[0], "deny")
         self.assertEqual(self.tool("ExitWorktree", action="keep")[0], "allow")
