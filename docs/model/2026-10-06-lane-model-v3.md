@@ -40,7 +40,7 @@ Lanes have two purposes, and every rule below supports one of them.
 - **Runner.** The person or script that a running lane's runtime belongs to. A person becomes a runner by starting the runtime by hand. The lane's class says which kinds of runner it allows. A runner may run several lanes. A lane has at most one runner, and only a Running lane has one.
 - **Writer.** The person or script that is changing a lane's files. A lane has at most one writer at a time, and only the writer changes its files. A script that only runs the application is not a writer. The runner and the writer may be the same person or script, which then sits in both seats.
 - **Seat.** A lane has two seats, runner and writer. For each seat the lane tool records who sits in it, since when, and whether they are still alive. The lane tool fills a seat when a runner or writer starts and empties it when they end. Every transition that could touch the lane reads both seats. The lane tool refuses whoever tries to take a taken seat, and what they do next is their own choice (section 7.1). A seat whose occupant is gone is stale. The seats are not a worktree lock, which some tools keep only to stop someone from removing a worktree.
-- **Prep.** What the lane tool does to make a lane worktree ready for work, right after create and on every resume. The model requires only the warning of section 7.1. The implementation and its integrations add the rest.
+- **Prep.** What the lane tool does to make a lane worktree ready for work, right after create, on every resume and on any other trigger an integration adds. The model requires only the warning of section 7.1. The implementation and its integrations add the rest.
 - **Pause.** Pause stops the runtime and keeps everything else.
 - **Teardown.** Teardown removes the lane for good: its runtime, data, lane worktree and registry entries. It never removes anything in the main worktree.
 - **Runaway.** The state of a lane whose lane worktree exists and whose runtime is up with no live runner. Either the runner is gone, or nobody recorded one, or someone detached the runtime from its runner on purpose. Runaway is a state name, used the same way as Paused.
@@ -98,7 +98,7 @@ These hold in every project and every class, whatever the tooling.
 - **I9. When the lane tool cannot make a check, nothing guesses.** A destructive operation refuses and a non-destructive one does nothing. A lane whose class cannot be read is such a case.
 - **I10. Every Leftover, each of its remaining resources and every anomaly of a living lane is visible and names its fix.** Listing lanes shows Runaway lanes, orphans, stale seats, registry entries whose directory is gone and stray files, each with the step that clears it. A running lane shows its runner and since when it has run, or says that no runner is recorded. When the list cannot see something (a dependency is down, no seats are recorded), it says so instead of showing nothing.
 - **I11. Housekeeping has no more power than whoever runs it.** It uses the same commands with the same refusals, whether it runs by hand or from a schedule. It never gives the human's word. A lane that teardown refuses goes into the housekeeping report.
-- **I12. One runner and one writer per lane, and stale seats are recoverable.** A lane has at most one runner and one writer at a time, and its seats say who they are. A runner may run several lanes. The lane tool can detect a seat whose runner or writer is gone. Stop a Runaway lane's runtime empties that seat, or whoever takes the seat next replaces it (Start runtime, Write). Both happen only after the lane tool has checked that no process of the old occupant remains. "End the runner first" is not an answer when the runner no longer exists.
+- **I12. One runner and one writer per lane, and stale seats are recoverable.** A lane has at most one runner and one writer at a time, and its seats say who they are. A runner may run several lanes. The lane tool can detect a seat whose runner or writer is gone. Stop a Runaway lane's runtime empties that seat, or whoever takes the seat next replaces it (Start runtime, Write). Start runtime replaces a stale runner seat only when the runtime is down. When the runtime is up the lane is Runaway, and Stop a Runaway lane's runtime empties the seat first. Both happen only after the lane tool has checked that no process of the old occupant remains. "End the runner first" is not an answer when the runner no longer exists.
 - **I13. Teardown removes everything the lane owns.** Teardown removes every resource that create, prep or start made. When it cannot remove one (a dependency is down), it lists that resource as a remaining resource of the lane, which is then a Leftover. A change that adds a resource type to create or start adds it to teardown too.
 
 ## 5. What a lane owns
@@ -127,15 +127,14 @@ stateDiagram-v2
   [*] --> Prepared: create and prep
   Prepared --> Running: start (the class allows it and a runner needs it)
   Running --> Paused: pause (by the runner, or the runner ended)
-  Paused --> Running: resume
+  Paused --> Running: resume and prep
   Running --> Runaway: runner gone or detached with the runtime up
   [*] --> Runaway: runtime started outside the lane tool
   Runaway --> Paused: runtime stopped
-  Paused --> Finished: finish rule met
-  Prepared --> Finished: finish rule met
-  Running --> Finished: finish rule met
-  Runaway --> Finished: finish rule met
-  Finished --> [*]: teardown
+  Prepared --> [*]: teardown (finish rule met, or the human's word)
+  Paused --> [*]: teardown (finish rule met, or the human's word)
+  Running --> [*]: teardown (finish rule met, or the human's word)
+  Runaway --> [*]: teardown (finish rule met, or the human's word)
   Prepared --> Leftover: lane worktree removed outside teardown
   Paused --> Leftover: lane worktree removed outside teardown
   Running --> Leftover: lane worktree removed outside teardown
@@ -147,7 +146,7 @@ stateDiagram-v2
 - **Running.** The runtime is up, and the data exists since the first start. Exactly one recorded runner, of a kind the lane's class allows, runs the lane until that runner pauses it or ends. A runner may run several Running lanes. A lane whose runtime has no runner is Runaway, not Running. A lane becomes Running only through Start runtime (section 7).
 - **Runaway.** The lane worktree exists and the runtime is up with no live runner. The runner is gone, or nobody recorded one, as when someone starts a runtime outside the lane tool or detaches it from its runner. A Prepared or Paused lane whose runtime starts that way is Runaway too. Runaway is an anomaly of a lane that still lives, so it is not a Leftover. Nobody takes over the runtime while it runs. Someone stops it (section 7, Stop a Runaway lane's runtime), the lane is Paused, and whoever needs the application starts a new lane.
 - **Paused.** The runtime is stopped. The lane keeps its data, port, installed packages and lane worktree. Every lane that has run and is not running is Paused, for example between two stretches of work or while its changes wait to land. Resuming from here takes seconds, not a rebuild. When someone stops a Runaway lane's runtime before the lane's first start through the lane tool, the lane is Paused with no data yet, and the lane tool creates the data at that first start.
-- **Finished.** The lane's finish rule is met. The lane still exists, normally Paused or Prepared, and waits for teardown.
+- **Finished is not a state.** It is a property of any living lane: its class's finish rule is met. The lane tool reads the rule when asked and stores no result, since a rule can change its answer (a closed pull request can reopen). A lane whose rule is met stays in its state. A Running one is paused by its runner as usual, and teardown then removes it. The list shows the rule's result beside the state.
 - **Leftover.** The lane worktree is gone and something of the lane remains: data, registry entries, a runtime still up. A Leftover is always an anomaly. The list must show it, and nothing brings it back. Teardown by name is the only operation that ends it.
 - **Absent.** Nothing of the lane remains.
 
@@ -166,14 +165,15 @@ Each row of the first table is one edge of the diagram in section 6, from one st
 | Runner gone | Running | Runaway | The runner crashes, or someone detaches the runtime from its runner | Nobody on a crash. Whoever detaches the runtime | None, since nothing can refuse it. On a crash the runner seat goes stale. The list shows the lane as Runaway (I5, I10, I12) | None |
 | Runtime started outside the lane tool | None. It enters the flow from outside, as Create does | Runaway | Someone starts the lane's runtime outside the lane tool | Whoever starts it | None, since nobody asks the lane tool. It records no runner, traces the process to the lane (section 5), and the list shows the lane as Runaway (I10) | None |
 | Stop a Runaway lane's runtime | Runaway | Paused | Someone finds a Runaway lane | Whoever finds it, through the lane tool | The lane worktree exists. The runner seat records nobody, or the recorded runner is gone and no process of it remains (I12). The lane tool stops the runtime and empties the stale runner seat | Leave the lane as it is and say so (I9). A lane whose lane worktree is gone is a Leftover, and only teardown by name ends it |
-| Finish | Prepared, Paused, Running or Runaway | Finished | The class's finish rule is met | Whoever the rule names | The rule sets them, not this table | None |
-| Teardown | Finished. Prepared, Paused, Running or Runaway only on the human's explicit word (I4) | Absent | The lane is finished, or the human asks | Whoever runs housekeeping, or the human, all through one command | In this order, all before teardown destroys anything: no live runner or writer sits in a seat, the class's safe copy holds every change in the lane worktree, and the finish rule is met | Refuse, touch nothing, name the reason, and say whether the human's word can lift the refusal. The human's word cannot lift a refusal caused by a live runner or writer in a seat |
+| Teardown | Prepared, Paused, Running or Runaway. When the finish rule is not met, only on the human's explicit word (I4) | Absent | The finish rule is met, or the human asks | Whoever runs housekeeping, or the human, all through one command | In this order, all before teardown destroys anything: no live runner or writer sits in a seat, the class's safe copy holds every change in the lane worktree, and the finish rule is met | Refuse, touch nothing, name the reason, and say whether the human's word can lift the refusal. The human's word cannot lift a refusal caused by a live runner or writer in a seat |
 | Lane worktree removed outside teardown | Prepared, Paused, Running or Runaway | Leftover | A manual deletion, or another tool's removal | Anyone | Whatever can refuse the removal refuses it (I3). When nothing refuses it, the lane is a Leftover and the next list shows it (I10) | The removal does not happen, and the lane stays in its state |
 | Teardown by name | Leftover | Absent | Someone finds the Leftover in the list | Same as Teardown | The checks of Teardown, against whatever of the lane is left | Same as Teardown. Nothing else ends a Leftover |
 
-Two steps that the earlier table listed are not edges, because neither changes the lane's state.
+Three steps that the earlier table listed are not edges, because none changes the lane's state.
 
-**Prep** is a step, not a transition of its own. It runs right after Create and as the first step of Resume. The lane tool checks that the lane is not running under another runner or under none. When it is, the lane tool warns, shows the seats and goes on (section 7.1).
+**Finish** is a predicate, not a transition (section 6). Whoever the class's rule names makes it true, and the lane tool reads it live whenever a check needs it.
+
+**Prep** is a step, not a transition of its own. It runs right after Create and as the first step of Resume, and an integration may add triggers, such as the start of a session in the lane. The lane tool checks that the lane is not running under another runner or under none. When it is, the lane tool warns, shows the seats and goes on (section 7.1).
 
 **Land** is outside the model (section 1, Landed). Whoever the project's review process allows lands a change, and the model sets no check on it.
 
@@ -189,7 +189,7 @@ The writer seat changes while the lane stays in its state, so its changes have a
 
 A person, a script or the lane tool may reach a lane that runs under another runner, or under no runner at all. The lane tool warns whoever reaches the lane before they do anything there.
 
-The warning shows the seats: who runs the runtime, by script name or as a person who started it by hand, when it started, whether that runner is still alive, the lane's class, and who sits in the writer seat. When the seats record nobody, the warning says so and says the lane is Runaway. When the environment keeps no records at all, the warning says that instead.
+The warning shows the seats: who runs the runtime, by script name or as a person who started it by hand, when it started, whether that runner is still alive, the lane's class, and who sits in the writer seat. When the seats record nobody, the warning says so and says the lane is Runaway. When the environment keeps no records at all, the warning says that instead. It also says which step will refuse the person or script next, such as Start runtime on a lane that runs under another runner.
 
 A taken seat stays with whoever sits in it. The lane tool refuses whoever tries to take it and shows the seats again. What the refused person or script does next, such as making the change in another lane, is their own choice and outside the model.
 

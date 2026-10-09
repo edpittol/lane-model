@@ -120,7 +120,7 @@ The lane's local branch, its remote branch and its pull request head carry the s
 
 ### 12.4 Sync with base
 
-Sync brings a lane up to date with its base, so the work is tested against the branch it will land on. It runs as part of prep, at create and at every resume, and never in the middle of a stretch of work. It is the catch-up that I7 leaves to an integration: its source of truth is the Git host.
+Sync brings a lane up to date with its base, so the work is tested against the branch it will land on. It runs as part of prep, at create, at every resume and at every other prep trigger an integration adds (section 13.4), and never in the middle of a stretch of work. It is the catch-up that I7 leaves to an integration: its source of truth is the Git host.
 
 #### Catch-up method
 
@@ -166,8 +166,8 @@ Every run ends in exactly one outcome, reported in one line. Held changes nothin
 | Prep | A check: no Git operation is in progress (merge, rebase, cherry-pick, revert). When it fails: stop, name the operation to finish or abort |
 | Sync with base | A new transition, part of prep, owned by the lane tool (section 12.4) |
 | Open pull request | A new transition, in a class that requires a pull request. Trigger: work finished. Checks: branch pushed; no pull request open for it yet |
-| Finish | For the pull request class, the pull request is merged or closed on the Git host, by whoever the repository's review process allows |
-| Teardown | The safe-copy check becomes two: no uncommitted changes; every local commit on a remote or in a merged pull request head. When the Git host cannot be asked, teardown refuses (I9) |
+| Finish | For the pull request class, the rule is read from the Git host on every ask and stored nowhere: the pull request is merged or closed, by whoever the repository's review process allows |
+| Teardown | The safe-copy check becomes two: no uncommitted changes; every local commit on a remote or in a merged pull request head. The lane tool fetches the merged pull request's head from the Git host and checks containment against it, since after a squash or a rebase with the head branch deleted it is the only copy. When the Git host cannot be asked, teardown refuses (I9) |
 | Lane worktree removed outside teardown | Also `git worktree remove`. Teardown by name then runs the same checks against the remaining branch |
 
 A branch whose prefix matches no declared class is the unreadable class of I9: teardown refuses and sync is Held.
@@ -182,7 +182,7 @@ A replay catch-up over the lane's own merge commits flattens them without losing
 |---|---|
 | Git, with worktrees | One worktree and one branch per lane; "contains" and "missing from every remote" for I1 |
 | A web-based Git host, reachable over the network, with an API the lane tool can call | Pull request state for the finish rule (I4); the pull request's current target and the repository's allowed landing methods for sync; merged pull request heads for I1 |
-| The Git host keeps a merged pull request's head reachable after deleting its branch | I1 in a repository that allows squash or rebase. A repository that allows only merge commits does not need it |
+| The Git host keeps a merged pull request's head reachable after deleting its branch, and lets the lane tool fetch it | I1 in a repository that allows squash or rebase. A repository that allows only merge commits does not need it |
 
 Being unable to reach the Git host is not a degraded mode with its own rules: every step that needs it refuses (teardown) or is Held (sync), and says the Git host could not be asked (I9).
 
@@ -204,7 +204,7 @@ This section adds an agent and the harness it runs in. Nothing in sections 1 to 
 |---|---|
 | Runner | A live session is a third kind of runner. A class says whether it allows it |
 | Writer | A session is a writer, and so it takes the writer seat. A session may be a lane's runner and its writer at once |
-| Runner's end | A session's end is its end as a runner, so the lanes it runs pause. A session also pauses the lanes it runs when the work in them is finished |
+| Runner's end | A session's end is its end as a runner, so the lanes it runs pause. A session also pauses a lane it runs once the lane's finish rule is met, or earlier on its own judgement |
 | Seat | The harness or the lane tool seats a session when it starts in a lane, and empties its seats when the session ends |
 
 ### 13.3 Added actors
@@ -220,7 +220,8 @@ This section adds an agent and the harness it runs in. Nothing in sections 1 to 
 |---|---|
 | Create | The agent may create the lane through the harness, on a human brief |
 | Round | A new transition. Trigger: work done. Owner: the session that is the lane's writer. Checks: the session has the writer seat; the build and checks the project requires. When a check fails: report, and save a broken round only when asked |
-| Pause | Also triggered by the session's end hook, and by the work in the lane finishing, even while the session goes on in other lanes |
+| Pause | Also triggered by the session's end hook, and by the lane's finish rule being met, even while the session goes on in other lanes |
+| Prep | Also runs when a session starts in a lane, before any work, so a lane that never resumes is still synced |
 | Runner ends | A session exits, logs out or crashes. On a clean end, exactly the lanes that session runs pause. On a crash they become runaways |
 | Lane worktree removed outside teardown | Also the harness's own removal, refused where the harness lets a hook refuse it |
 
@@ -260,13 +261,13 @@ These were decisions, not gaps. None is open: each one is settled, or was left o
 
 ## Appendix A. Bindings
 
-Each repository fills in its rows; sections 1 to 10 of the model never name these tools. A binding is part of that repository's docs, not of the model, and moves there once the model is adopted.
+Each repository fills in its rows; sections 1 to 10 of the model never name these tools. The binding of the lane-model project itself is `docs/binding.md`. A binding is part of that repository's docs, not of the model, and moves there once the model is adopted.
 
 | Term | Bettrbyus | Bettr Bowl website | Bettr Manager |
 |---|---|---|---|
 | Worktree location | `.claude/worktrees/` | `.claude/worktrees/` | `../bettr-manager-worktrees/` |
 | Git host | GitHub, via `gh` | GitHub, via `gh` | GitHub, via `gh` |
-| Landing methods allowed | Squash, so catch-up by merge | Unverified | Merge commit by doctrine, but rebase is still allowed (B10), so catch-up by replay until rebase is turned off |
+| Landing methods allowed | Squash and merge commit, so catch-up by merge | Unverified | Merge commit by doctrine, but rebase is still allowed (B10), so catch-up by replay until rebase is turned off |
 | Lane classes | Pull request class only, as the default class | Pull request class only, as the default class | No default class: no lane is unmarked. Undeclared, used by prefix: `worktree/<lane>` (close to the pull request class: runtime, pull request required) and `self-improvement/<topic>` (no runtime, the pull request stays a draft); a prototype lane with no pull request was also used (`input-borders`) |
 | Lane name | Two to four lowercase words joined by dashes (`AGENTS.md` section 1) | Unverified | A slug after the prefix (`worktree/<lane>`, `self-improvement/<topic>`); its rule is unverified |
 | Binding restrictions | Lanes are opt-in per clone since PR #216 (2026-10-01, `scripts/lane.sh method`); without them, work happens in the checkout and none of this model applies. With them, one lane per session (`AGENTS.md` section 1); the session-end hook pauses the lane of the working directory, which is correct only under that restriction | One lane per session | None; one orchestrator session may run any number of lanes |
@@ -318,3 +319,10 @@ V3 started on 2026-10-06 as a copy of V2 as finished that day. Each change to V3
 
 | Change | Where | Status |
 |---|---|---|
+| Finished is a predicate read live from the finish rule, not a state. The Finished node, its five edges and the Finish row go. Teardown's From is any living state | Sections 6 and 7, diagram | Decided 2026-10-08 (Q5). Fixes the deadlock of Running to Finished, the missing Finished to Leftover edge, and a stored result that contradicts 12.4 |
+| Prep gains a third trigger under the harness: when a session starts in a lane. The Paused to Running edge reads "resume and prep" | Sections 1, 6, 7 and parked 12.4, 13.4 | Decided 2026-10-08 (Q6). A Prepared lane that never resumes was never synced again |
+| A session pauses a lane once its finish rule is met, or earlier on its own judgement. "Work finished" goes | Parked 13.2, 13.4 | Decided 2026-10-08 (Q7) |
+| A stale runner seat is replaced at Start runtime only when the runtime is down | I12 | Decided 2026-10-08 (Q17) |
+| The safe-copy check fetches the merged pull request's head from the Git host | Parked 12.5, 12.7 | Decided 2026-10-08 (Q18) |
+| The warning names the step that will refuse next | Section 7.1 | Decided 2026-10-08 (Q19) |
+| Bettrbyus landing cell: squash and merge commit, so catch-up by merge | Appendix A | Decided 2026-10-08 (Q20) |
