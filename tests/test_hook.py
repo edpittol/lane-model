@@ -132,11 +132,19 @@ class Lifecycle(Hook):
 
     def test_worktree_remove_runs_teardown_with_its_refusals(self):
         self.ok("create", "alpha-one")
-        p = self.hook("WorktreeRemove", worktree_path=str(self.wt("alpha-one")))
+        # The input shape a live clean-exit removal sent: cwd is the lane itself.
+        wt = self.wt("alpha-one")
+        p = self.hook("WorktreeRemove", cwd=wt, prompt_id="p-1", worktree_path=str(wt))
         self.assertEqual(p.returncode, 2); self.assertIn("finish rule not met", p.stderr)
         self.prs("alpha-one", {"number": 1, "state": "CLOSED", "headRefOid": "x", "baseRefName": "main"})
-        self.assertEqual(self.hook("WorktreeRemove", worktree_path=str(self.wt("alpha-one"))).returncode, 0)
-        self.assertFalse(self.wt("alpha-one").exists())
+        self.assertEqual(self.hook("WorktreeRemove", cwd=wt, prompt_id="p-1", worktree_path=str(wt)).returncode, 0)
+        self.assertFalse(wt.exists())
+
+    def test_worktree_remove_without_worktree_path_keeps_the_lane(self):
+        self.ok("create", "alpha-one")
+        self.prs("alpha-one", {"number": 1, "state": "CLOSED", "headRefOid": "x", "baseRefName": "main"})
+        self.assertEqual(self.hook("WorktreeRemove", path=str(self.wt("alpha-one"))).returncode, 2)
+        self.assertTrue(self.wt("alpha-one").exists())
 
     def test_heartbeat_refreshes_only_old_beats(self):
         self.ok("create", "alpha-one")
