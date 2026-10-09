@@ -35,7 +35,7 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | Capability | Has it | Evidence |
 |---|---|---|
 | Refuse removal of a lane worktree outside teardown | Partly | `ExitWorktree remove` is refused by the hook (tested). Removal at session exit fires `WorktreeRemove`, which runs teardown with its refusals and keeps the lane when teardown refuses (measured, for a lane made by `WorktreeCreate`). `git worktree remove` and `rm -rf` cannot be refused and leave a Leftover |
-| Each runner signals its end | Sessions only | `SessionEnd` pauses the session's lanes and releases its writer seat (tested, reason `other`). A person or script that dies leaves a Runaway lane |
+| Each runner signals its end | Sessions only | `SessionEnd` pauses the session's lanes and releases its writer seat (tested, reason `other`). A script that dies leaves a Runaway lane. A person ends only by `pause` or `release`, so closing a terminal ends nothing |
 | Record runner, writer and liveness | Yes | Lane tool. Session pid found through an undocumented harness session record or an ancestor command line carrying the session id (tested; which of the two answered was not recorded) |
 | Find every process of a lane | Mostly | `--lane-id` on the runtime's command line, plus its descendants. A process that detaches and reparents to init is missed (gap L2) |
 | Refuse a write in the main worktree | Mostly | Edit, Write, NotebookEdit refused (tested). Bash writing shapes refused (unit; the model in the real session declined to try). Holes listed in `AGENTS.md` |
@@ -64,7 +64,7 @@ Tested means a real headless Claude Code session 2.1.295 on 2026-10-09 with the 
 | L1 | Stacked lane whose parent was squashed or rebased, caught up by replay: 12.4 asks for the parent's merged head to be read and only the lane's own commits replayed. Not implemented. Matters only where the repository allows rebase landing, which this one does not |
 | L2 | A runtime process that detaches from the lane's process tree is not traced to its lane |
 | L3 | A lane removed by the exit prompt, `git worktree remove` or `rm` becomes a Leftover. The session-end hook tears it down by name only for lanes in the session ledger; the rest wait for `list` and `housekeeping` |
-| L5 | A person's identity is their login name, and liveness is the shell that ran the command. Pausing from another terminal as the same person is allowed. The model does not say whether a person is a login or a shell |
+| L5 | A person is their login name and is never gone, so only that person pauses their runtime or empties their seats. A person who never comes back blocks Stop and teardown of their lanes, and nobody else can lift it, the human's word included |
 | L6 | The session pid sources are undocumented harness behaviour and may change |
 | L7 | Bash writes inside a lane do not take the writer seat |
 | L8 | A `claude --worktree` session has the lane as its project, so it probably reads `.claude/settings.json` from the lane branch. A lane that edits the wiring may change which hooks guard it. Not measured |
