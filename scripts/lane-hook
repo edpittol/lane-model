@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Claude Code hook entry for the lane tool: one script, dispatched on hook_event_name.
+
+Set LANE_HOOK_LOG=<file> to append every hook input as a JSON line (used to test what the harness sends).
+"""
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import re
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+here = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_loader("lane", SourceFileLoader("lane", str(here / "lane")))
+lane = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lane)
+
+data = json.load(sys.stdin)
+event = data.get("hook_event_name", "")
+if os.environ.get("LANE_HOOK_LOG"):
+    with open(os.environ["LANE_HOOK_LOG"], "a") as f:
+        f.write(json.dumps({"event": event, "input": data, "ppid": os.getppid()}) + "\n")
+
+
+def out(obj):
+    print(json.dumps(obj))
+    sys.exit(0)
+
+
+def deny(reason):
+    out({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}})
+
+
+def project():
+    return lane.Project(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR"))
+
+
+def session_actor(sid):
+    found = lane.session_process(sid)
+    return {"kind": "session", "label": sid[:8], "session_id": sid, "pid": found[0] if found else None,
+            "pid_start": found[1] if found else None, "since": lane.now(), "heartbeat": lane.now()}
+
+
+def under(path, root):
+    try:
+        return Path(path).relative_to(root).parts
+    except ValueError:
+        return None
+
+
+def real(path):
+    p = Path(path)
+    return p.parent.resolve() / p.name if not p.exists() else p.resolve()
+
+
+# ---- I8: the main worktree is not a workspace. Shapes of shell writes the guard recognises.
+PLAIN_WRITERS = {"tee", "mv", "cp", "rm", "rmdir", "mkdir", "touch", "ln", "chmod", "chown", "dd", "install", "truncate", "patch", "wget"}
+GIT_WRITERS = {"commit", "add", "checkout", "switch", "reset", "merge", "rebase", "stash", "pull", "cherry-pick", "restore",
+               "clean", "apply", "am", "revert", "rm", "mv", "branch", "tag"}
+PKG = {"npm", "pnpm", "yarn", "bun", "pip", "pip3", "brew", "cargo", "uv"}
+PKG_WRITERS = {"install", "i", "add", "remove", "rm", "uninstall", "update", "upgrade", "ci", "sync"}
+REDIRECT = re.compile(r"(\d?>>?|&>)(?!&)\s*(?!/dev/null\b)\S")
+
+
+def shell_writes(cmd):
+    """Return the shape that writes, or None. Quoted text is blanked first so `grep 'a>b'` is not a write."""
+    c = re.sub(r"'[^']*'|\"[^\"]*\"", "''", cmd)
+    if REDIRECT.search(c):
+        return "a redirect to a file"
+    for seg in re.split(r"&&|\|\||[;|\n(]", c):
+        words = [w for w in seg.split() if not re.fullmatch(r"\w+=\S*", w) and w not in ("sudo", "command", "env", "time", "nohup")]
+        if not words:
+            continue
+        first = os.path.basename(words[0])
+        if words[0].endswith("scripts/lane") or first == "lane":
+            continue
+        rest = words[1:]
+        if first in PLAIN_WRITERS:
+            return first
+        if first in ("sed", "perl", "ruby") and any(w == "-i" or w.startswith("-i") and len(w) < 6 or w == "--in-place" for w in rest):
+            return f"{first} -i"
+        if first == "git":
+            skip, sub = False, ""
+            for w in rest:
+                if skip:
+                    skip = False
+                elif w in ("-C", "-c", "--git-dir", "--work-tree"):
+                    skip = True
+                elif not w.startswith("-"):
+                    sub = w
+                    break
+            if sub in GIT_WRITERS:
+                return f"git {sub}"
+        if first in PKG and rest and rest[0] in PKG_WRITERS:
+            return f"{first} {rest[0]}"
+        if first == "curl" and any(w in ("-o", "-O", "--output") or w.startswith("-o") and len(w) > 2 and not w.startswith("--") for w in rest):
+            return "curl -o"
+    return None
+
+
+def pre_tool_use():
+    tool, ti = data.get("tool_name", ""), data.get("tool_input", {}) or {}
+    if tool == "ExitWorktree":
+        if ti.get("action") == "remove":
+            deny("Only teardown removes a lane (I3). Use action keep, then `scripts/lane teardown <name>` once its pull request is merged or closed.")
+        return
+    try:
+        P = project()
+    except lane.Refuse as e:
+        if str(e).startswith("not inside"):
+            return
+        deny("The lane class file cannot be read, so nothing guesses (I9): " + "; ".join(e.reasons))
+    if tool in ("Edit", "Write", "NotebookEdit"):
+        path = ti.get("file_path") or ti.get("notebook_path")
+        if not path:
+            return
+        parts = under(real(path), P.main)
+        if parts is None:
+            return
+        wparts = under(real(path), P.wtroot)
+        if wparts:
+            try:
+                P.take_seat(wparts[0], "writer", session_actor(data["session_id"]))
+            except lane.Refuse as e:
+                deny("\n".join(e.reasons))
+            return
+        deny("The main worktree is not a workspace (I8): make this change in a lane. `scripts/lane create <name>` and work in the worktree it prints.")
+    if tool == "Bash":
+        cwd = real(data.get("cwd") or ".")
+        if under(cwd, P.main) is None or under(cwd, P.wtroot):
+            return
+        shape = shell_writes(ti.get("command", ""))
+        if shape:
+            deny(f"This command writes ({shape}) while the working directory is the main worktree, which is not a workspace (I8). "
+                 "Work in a lane. The guard knows shell shapes only; see AGENTS.md for what it cannot see.")
+
+
+def session_start():
+    sid = data["session_id"]
+    found = lane.session_process(sid)
+    envfile = os.environ.get("CLAUDE_ENV_FILE")
+    if envfile:
+        with open(envfile, "a") as f:
+            f.write(f"export LANE_SESSION_ID='{sid}'\n")
+            if found:
+                f.write(f"export LANE_SESSION_PID='{found[0]}'\nexport LANE_SESSION_PID_START='{found[1]}'\n")
+    lines = ["Lanes are on in this project: the main worktree is read-only and every change is made in a lane. The method is in AGENTS.md."]
+    lines.append(f"Session {sid[:8]}: " + (f"harness pid {found[0]} found via {found[2]}." if found else "no pid found, so liveness rests on heartbeats."))
+    try:
+        P = project()
+        table = lane.ps_table()
+        for n in P.names(table):
+            i = P.inspect(n, table, host=False)
+            lines.append(f"- {n}: {i['state']}, runner {P.fmt_seat(i['runner'])}, writer {P.fmt_seat(i['writer'])}")
+        parts = under(real(data.get("cwd", ".")), P.wtroot)
+        if parts:
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                outcome, line = P.prep(parts[0])
+            lines.append(f"Prep of {parts[0]}: {outcome}: {line}")
+            if buf.getvalue().strip():
+                lines.append(buf.getvalue().strip())
+    except lane.Refuse as e:
+        lines.append("Lane tool: " + "; ".join(e.reasons))
+    out({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}})
+
+
+def session_end():
+    sid = data["session_id"]
+    P = project()
+    me = session_actor(sid)
+    for n in P.ledger_names(sid):
+        try:
+            if P.wt(n).is_dir():
+                rec = P.read_record(n) or {}
+                for seat in lane.SEATS:
+                    cur = rec.get("seats", {}).get(seat)
+                    if cur and lane.same_actor(cur, me):
+                        P.pause(n, me) if seat == "runner" else P.release_seat(n, seat, me)
+            else:
+                P.teardown(n)
+        except lane.Refuse as e:
+            print(f"lane {n}: left as it is: " + "; ".join(e.reasons), file=sys.stderr)
+    with contextlib.suppress(OSError):
+        P.ledger(sid).unlink()
+
+
+def worktree_create():
+    name = data.get("name", "")
+    if data.get("agent_id") or re.match(r"^agent-", name):
+        print("A lane comes from a brief and a name a person recognises; subagent worktree isolation is refused. "
+              "Delegate inside the lane instead.", file=sys.stderr)
+        sys.exit(2)
+    try:
+        print(project().create(name))
+    except lane.Refuse as e:
+        print("\n".join(e.reasons), file=sys.stderr)
+        sys.exit(2)
+
+
+def worktree_remove():
+    path = data.get("worktree_path") or data.get("path") or ""
+    try:
+        project().teardown(Path(path).name)
+    except lane.Refuse as e:
+        print("\n".join(e.reasons), file=sys.stderr)
+        sys.exit(2)
+
+
+def cwd_changed():
+    try:
+        P = project()
+        parts = under(real(data.get("new_cwd") or "."), P.wtroot)
+        if parts:
+            P.prep(parts[0])
+    except lane.Refuse:
+        pass
+
+
+handlers = {"PreToolUse": pre_tool_use, "SessionStart": session_start, "SessionEnd": session_end,
+            "WorktreeCreate": worktree_create, "WorktreeRemove": worktree_remove, "CwdChanged": cwd_changed}
+if event in handlers:
+    try:
+        handlers[event]()
+    except lane.Refuse as e:
+        print("; ".join(e.reasons), file=sys.stderr)
+elif event in ("UserPromptSubmit", "PostToolUse", "Stop"):
+    with contextlib.suppress(lane.Refuse, OSError):
+        project().heartbeat(data["session_id"])

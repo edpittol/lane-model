@@ -1,0 +1,38 @@
+# The class file (section 3 of the model). Read by scripts/lane from the main worktree.
+# The tool refuses to run when this file cannot be read or declares a value it does not implement (I9).
+
+[project]
+slug = "lane-model"
+
+[naming]
+# Lowercase words and digits joined by single dashes. No "/", so no name can be mistaken for a marker.
+pattern = "[a-z0-9]+(-[a-z0-9]+)*"
+min_length = 3
+max_length = 40
+
+[paths]
+worktrees = ".claude/worktrees"
+
+[seats]
+# A seat with no known pid is stale after this long without a heartbeat.
+heartbeat_minutes = 30
+
+[housekeeping]
+# The resting limit: a lane whose seats have both been empty this long is reported.
+resting_days = 7
+
+[runtime]
+command = ["python3", "sample/server.py", "--lane-id", "{lane_id}", "--port", "{port}", "--data", "{data}"]
+dependencies = ["python3"]
+port_base = 3100
+port_span = 900
+
+[class.pull-request]
+default = true
+marker = ""
+runtime = "on-demand"
+runners = ["person", "script", "session"]
+safe_copy = "remote-or-merged-pr-head"
+finish_rule = "pull-request-merged-or-closed"
+pull_request = "required"
+base = "pull-request-target"

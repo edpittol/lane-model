@@ -1,0 +1,919 @@
+#!/usr/bin/env python3
+"""The lane tool of the lane model (docs/model). Python 3.11+, standard library only.
+
+Seats and the starting point live in the lane worktree's Git directory (lane.json).
+A roster entry in the Git config (lane.<name>.*) lets a branch be traced to its lane
+after the worktree is gone. Every other record is derived: from the name (ids, paths),
+from the process table (runtime), from the Git host (finish rule).
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import tomllib
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+CONFIG_NAME = "lanes.toml"
+HOST_DOWN = "the Git host could not be asked"
+LANE_ID_RE = re.compile(r"--lane-id (\S+)")
+PS_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$")
+SEATS = ("runner", "writer")
+CLASS_KEYS = {"default", "marker", "runtime", "runners", "safe_copy", "finish_rule", "pull_request", "base"}
+
+
+class Refuse(Exception):
+    """A check failed. Nothing was changed."""
+
+    def __init__(self, reasons):
+        self.reasons = [reasons] if isinstance(reasons, str) else list(reasons)
+        super().__init__("; ".join(self.reasons))
+
+
+class HostError(Exception):
+    pass
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def age_seconds(ts: str) -> float:
+    then = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - then).total_seconds()
+
+
+def say(*a):
+    print(*a, file=sys.stderr)
+
+
+def run(args, cwd=None, env=None, timeout=120):
+    try:
+        return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(args, 127, "", str(e))
+
+
+# ---------------------------------------------------------------- processes
+
+def ps_table():
+    p = run(["ps", "-axo", "pid=,ppid=,lstart=,command="])
+    if p.returncode:
+        raise OSError("ps failed: " + p.stderr.strip())
+    rows = []
+    for line in p.stdout.splitlines():
+        m = PS_RE.match(line)
+        if m:
+            rows.append({"pid": int(m[1]), "ppid": int(m[2]), "start": " ".join(m[3].split()), "cmd": m[4]})
+    return rows
+
+
+def proc_start(pid: int):
+    s = " ".join(run(["ps", "-o", "lstart=", "-p", str(pid)]).stdout.split())
+    return s or None
+
+
+def descendants(table, roots):
+    kids, out, todo = {}, set(roots), list(roots)
+    for r in table:
+        kids.setdefault(r["ppid"], []).append(r["pid"])
+    while todo:
+        for k in kids.get(todo.pop(), []):
+            if k not in out:
+                out.add(k)
+                todo.append(k)
+    return out
+
+
+def session_process(session_id: str):
+    """Find the pid of the harness process of a session. Returns (pid, start, how) or None.
+
+    Undocumented sources, tried in order: the harness's own session records, then an
+    ancestor whose command line carries the session id."""
+    dirs = [os.environ.get("CLAUDE_CONFIG_DIR"), str(Path.home() / ".claude")]
+    for d in filter(None, dirs):
+        for f in (Path(d) / "sessions").glob("*.json"):
+            try:
+                j = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if j.get("sessionId") == session_id and isinstance(j.get("pid"), int):
+                start = proc_start(j["pid"])
+                if start:
+                    return j["pid"], start, "harness session record"
+    try:
+        table = {r["pid"]: r for r in ps_table()}
+    except OSError:
+        return None
+    pid = os.getpid()
+    while pid in table and pid > 1:
+        if session_id in table[pid]["cmd"]:
+            return pid, table[pid]["start"], "ancestor command line"
+        pid = table[pid]["ppid"]
+    return None
+
+
+# ---------------------------------------------------------------- configuration
+
+def load_config(main: Path) -> dict:
+    path = main / CONFIG_NAME
+    try:
+        cfg = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise Refuse(f"cannot read the class file {CONFIG_NAME}: {e}")
+    problems = []
+    classes = cfg.get("class", {})
+    if not classes:
+        problems.append("no class declared")
+    defaults = [c for c, v in classes.items() if v.get("default")]
+    if len(defaults) != 1:
+        problems.append("exactly one class must be the default")
+    for c, v in classes.items():
+        if set(v) - CLASS_KEYS or CLASS_KEYS - {"default"} - set(v):
+            problems.append(f"class {c}: settings must be exactly {sorted(CLASS_KEYS)}")
+            continue
+        if v["runtime"] not in ("never", "on-demand"):
+            problems.append(f"class {c}: runtime {v['runtime']!r} unknown")
+        if not set(v["runners"]) <= {"person", "script", "session"}:
+            problems.append(f"class {c}: runners {v['runners']!r} unknown")
+        for key, only in (("safe_copy", "remote-or-merged-pr-head"), ("finish_rule", "pull-request-merged-or-closed"),
+                          ("pull_request", "required"), ("base", "pull-request-target")):
+            if v[key] != only:
+                problems.append(f"class {c}: {key} {v[key]!r} is not implemented by this tool")
+    for sec in ("naming", "paths", "runtime", "seats", "housekeeping"):
+        if sec not in cfg:
+            problems.append(f"section [{sec}] missing")
+    if not problems:
+        rt = cfg["runtime"]
+        if not any("{lane_id}" in a for a in rt["command"]):
+            problems.append("runtime.command must carry {lane_id}, or the runtime cannot be traced to its lane (I6)")
+        try:
+            re.compile(cfg["naming"]["pattern"])
+        except re.error as e:
+            problems.append(f"naming.pattern: {e}")
+    if problems:
+        raise Refuse([f"class file {CONFIG_NAME} cannot be used (I9): {p}" for p in problems])
+    return cfg
+
+
+# ---------------------------------------------------------------- actors and seats
+
+def actor_from_env(kind=None, label=None) -> dict:
+    """Who is acting. A session is known by the env its SessionStart hook exported."""
+    sid = os.environ.get("LANE_SESSION_ID")
+    if sid and kind in (None, "session"):
+        pid = int(os.environ["LANE_SESSION_PID"]) if os.environ.get("LANE_SESSION_PID") else None
+        start = os.environ.get("LANE_SESSION_PID_START") or (proc_start(pid) if pid else None)
+        return {"kind": "session", "label": sid[:8], "session_id": sid, "pid": pid, "pid_start": start,
+                "since": now(), "heartbeat": now()}
+    kind = kind or "person"
+    pid = os.getppid()
+    who = label or (os.environ.get("USER", "someone") if kind == "person" else f"script-{pid}")
+    return {"kind": kind, "label": who, "pid": pid, "pid_start": proc_start(pid), "since": now(), "heartbeat": now()}
+
+
+def same_actor(a: dict, b: dict) -> bool:
+    if a["kind"] != b["kind"]:
+        return False
+    if a["kind"] == "session":
+        return a.get("session_id") == b.get("session_id")
+    return a["label"] == b["label"]
+
+
+class Project:
+    def __init__(self, cwd=None):
+        cwd = Path(cwd or os.getcwd())
+        r = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd)
+        if r.returncode:
+            raise Refuse("not inside a Git repository")
+        self.common = Path(r.stdout.strip()).resolve()
+        self.main = self.common.parent
+        self.cfg = load_config(self.main)
+        slug = self.cfg.get("project", {}).get("slug") or self.main.name.lower()
+        self.pid = f"{slug}-{hashlib.sha1(str(self.main).encode()).hexdigest()[:6]}"
+        self.wtroot = self.main / self.cfg["paths"]["worktrees"]
+        self.data_root = Path(os.environ.get("LANE_DATA_ROOT") or Path.home() / ".local/share/lane") / self.pid
+        self.default_class = next(c for c, v in self.cfg["class"].items() if v.get("default"))
+        self.naming = re.compile(self.cfg["naming"]["pattern"])
+
+    # ----- identity (I6): every id is a pure function of class and name
+    def lane_id(self, name): return f"{self.pid}-lane-{name}"
+    def wt(self, name): return self.wtroot / name
+    def data(self, name): return self.data_root / name
+    def git(self, *a, cwd=None): return run(["git", *a], cwd=cwd or self.main)
+
+    def check_name(self, name):
+        n = self.cfg["naming"]
+        if not (n["min_length"] <= len(name) <= n["max_length"] and self.naming.fullmatch(name)):
+            raise Refuse(f"{name!r} breaks the naming rule: /{n['pattern']}/, {n['min_length']} to {n['max_length']} characters")
+
+    def class_of(self, dirname):
+        for cid, v in self.cfg["class"].items():
+            if v["marker"] and dirname.startswith(v["marker"]):
+                return cid, dirname[len(v["marker"]):]
+        n = self.cfg["naming"]
+        if n["min_length"] <= len(dirname) <= n["max_length"] and self.naming.fullmatch(dirname):
+            return self.default_class, dirname
+        return None
+
+    def klass(self, name):
+        found = self.class_of(name)
+        if not found:
+            raise Refuse(f"{name}: its directory name matches no declared class, so nothing guesses (I9). Declare the class in {CONFIG_NAME}")
+        return self.cfg["class"][found[0]]
+
+    # ----- records
+    def admin_dir(self, name):
+        base = self.common / "worktrees"
+        want = str(self.wt(name) / ".git")
+        if base.is_dir():
+            for d in base.iterdir():
+                try:
+                    if (d / "gitdir").read_text().strip() == want:
+                        return d
+                except OSError:
+                    pass
+        return None
+
+    def read_record(self, name):
+        ad = self.admin_dir(name)
+        if ad is None:
+            return None
+        try:
+            return json.loads((ad / "lane.json").read_text())
+        except (OSError, ValueError):
+            return None
+
+    @contextmanager
+    def record(self, name):
+        ad = self.admin_dir(name)
+        if ad is None:
+            raise Refuse(f"{name}: no worktree entry, so no seats are recorded")
+        with open(ad / "lane.lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                rec = json.loads((ad / "lane.json").read_text())
+            except (OSError, ValueError):
+                rec = {"name": name, "seats": {}}
+            yield rec
+            tmp = ad / "lane.json.tmp"
+            tmp.write_text(json.dumps(rec, indent=1))
+            os.replace(tmp, ad / "lane.json")
+
+    def seat_alive(self, seat):
+        """(alive, which test decided). Pid and start time first; heartbeat only when no pid is known."""
+        pid = seat.get("pid")
+        if pid:
+            start = proc_start(pid)
+            if start is None:
+                return False, f"pid {pid} is gone"
+            if seat.get("pid_start") and start != seat["pid_start"]:
+                return False, f"pid {pid} was reused"
+            return True, f"pid {pid} alive"
+        limit = self.cfg["seats"]["heartbeat_minutes"] * 60
+        age = age_seconds(seat.get("heartbeat") or seat["since"])
+        if age > limit:
+            return False, f"no pid known, heartbeat {int(age // 60)} min old"
+        return True, "no pid known, heartbeat fresh"
+
+    def fmt_seat(self, seat):
+        if not seat:
+            return "nobody"
+        alive, how = self.seat_alive(seat)
+        return f"{seat['label']} ({seat['kind']}) since {seat['since']}, {'alive' if alive else 'STALE'}: {how}"
+
+    def take_seat(self, name, seat, actor):
+        with self.record(name) as rec:
+            cur = rec.setdefault("seats", {}).get(seat)
+            if cur and not same_actor(cur, actor):
+                alive, _ = self.seat_alive(cur)
+                if alive:
+                    raise Refuse([f"the {seat} seat of {name} is taken by {self.fmt_seat(cur)}",
+                                  "a taken seat stays with whoever sits in it; make the change in another lane (section 7.1)"])
+            if cur and same_actor(cur, actor):
+                actor["since"] = cur["since"]
+            rec["seats"][seat] = actor
+            rec["idle_since"] = None
+        if actor["kind"] == "session":
+            self.ledger_add(actor["session_id"], name)
+
+    def release_seat(self, name, seat, actor=None):
+        with self.record(name) as rec:
+            cur = rec.get("seats", {}).get(seat)
+            if cur and actor and not same_actor(cur, actor):
+                raise Refuse(f"the {seat} seat of {name} is held by {self.fmt_seat(cur)}, not by you")
+            rec.get("seats", {}).pop(seat, None)
+            if not rec.get("seats"):
+                rec["idle_since"] = now()
+
+    # ----- session ledger: which lanes a session sat in, for the session-end hook
+    def ledger(self, sid): return self.common / "lane-sessions" / sid
+
+    def ledger_add(self, sid, name):
+        p = self.ledger(sid)
+        p.parent.mkdir(exist_ok=True)
+        names = set(p.read_text().split()) if p.exists() else set()
+        if name not in names:
+            p.write_text("\n".join(sorted(names | {name})) + "\n")
+
+    def ledger_names(self, sid):
+        p = self.ledger(sid)
+        return p.read_text().split() if p.exists() else []
+
+    def heartbeat(self, sid):
+        """Refresh the seats a session holds. Throttled to one write a minute per seat."""
+        for n in self.ledger_names(sid):
+            if not self.admin_dir(n):
+                continue
+            rec = self.read_record(n) or {}
+            if any(s.get("session_id") == sid and (not s.get("heartbeat") or age_seconds(s["heartbeat"]) > 60)
+                   for s in rec.get("seats", {}).values()):
+                with self.record(n) as rec:
+                    for s in rec.get("seats", {}).values():
+                        if s.get("session_id") == sid:
+                            s["heartbeat"] = now()
+
+    # ----- Git host
+    def gh(self, *a):
+        p = run(["gh", *a], cwd=self.main, timeout=60)
+        if p.returncode:
+            raise HostError(f"{HOST_DOWN}: gh {' '.join(a[:2])}: {p.stderr.strip() or 'failed'}")
+        try:
+            return json.loads(p.stdout)
+        except ValueError:
+            raise HostError(f"{HOST_DOWN}: unreadable answer")
+
+    def prs(self, name):
+        return self.gh("pr", "list", "--head", name, "--state", "all", "--limit", "20",
+                       "--json", "number,state,headRefOid,baseRefName,url")
+
+    def repo_facts(self):
+        return self.gh("repo", "view", "--json",
+                       "defaultBranchRef,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed")
+
+    @staticmethod
+    def finish_met(prs):
+        """Class rule: a pull request exists and none is open (merged or closed)."""
+        return bool(prs) and not any(p["state"] == "OPEN" for p in prs)
+
+    # ----- processes of a lane
+    def lane_procs(self, name, table=None):
+        table = table if table is not None else ps_table()
+        lid = self.lane_id(name)
+        roots = {r["pid"] for r in table if (m := LANE_ID_RE.search(r["cmd"])) and m[1] == lid and r["pid"] != os.getpid()}
+        keep = descendants(table, roots)
+        return [r for r in table if r["pid"] in keep]
+
+    def kill_procs(self, procs):
+        pids = [p["pid"] for p in procs]
+        for pid in pids:
+            try:
+                os.killpg(pid, signal.SIGTERM) if os.getpgid(pid) == pid else os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        deadline = time.time() + 5
+        while time.time() < deadline and any(proc_start(p) for p in pids):
+            time.sleep(0.1)
+        for pid in pids:
+            if proc_start(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    # ----- inventory (I10)
+    def names(self, table):
+        found = set()
+        r = self.git("config", "--get-regexp", r"^lane\..*\.class$")
+        for line in r.stdout.splitlines():
+            key = line.split()[0]
+            found.add(key[len("lane."):-len(".class")])
+        if self.wtroot.is_dir():
+            found |= {d.name for d in self.wtroot.iterdir() if d.is_dir()}
+        if self.data_root.is_dir():
+            found |= {d.name for d in self.data_root.iterdir() if d.is_dir()}
+        prefix = self.pid + "-lane-"
+        for row in table:
+            m = LANE_ID_RE.search(row["cmd"])
+            if m and m[1].startswith(prefix):
+                found.add(m[1][len(prefix):])
+        base = self.common / "worktrees"
+        if base.is_dir():
+            for d in base.iterdir():
+                try:
+                    g = Path((d / "gitdir").read_text().strip()).parent
+                except OSError:
+                    continue
+                if g.parent == self.wtroot:
+                    found.add(g.name)
+        return sorted(found)
+
+    def inspect(self, name, table, host=True):
+        wt = self.wt(name)
+        info = {"name": name, "wt": wt.is_dir(), "notes": [], "finish": "unknown", "prs": None}
+        info["class"] = self.class_of(name)
+        info["branch"] = self.git("show-ref", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0
+        info["data"] = self.data(name).is_dir()
+        info["procs"] = self.lane_procs(name, table)
+        info["admin"] = self.admin_dir(name)
+        rec = self.read_record(name) or {}
+        info["rec"] = rec
+        seats = rec.get("seats", {})
+        info["runner"], info["writer"] = seats.get("runner"), seats.get("writer")
+        info["runner_alive"] = bool(info["runner"]) and self.seat_alive(info["runner"])[0]
+        notes = info["notes"]
+        if not info["wt"]:
+            info["state"] = "Leftover"
+            left = [x for x, present in (("data", info["data"]), ("local branch", info["branch"]),
+                                         ("runtime up", bool(info["procs"])), ("worktree entry", bool(info["admin"]))) if present]
+            notes.append((f"worktree gone; remaining: {', '.join(left) or 'roster entry'}", f"lane teardown {name}"))
+        else:
+            if not info["class"]:
+                info["state"] = "Anomaly"
+                notes.append(("directory name matches no declared class", f"declare the class in {CONFIG_NAME}"))
+            elif info["procs"]:
+                info["state"] = "Running" if info["runner_alive"] else "Runaway"
+                if not info["runner_alive"]:
+                    why = "no runner recorded" if not info["runner"] else f"runner gone ({self.seat_alive(info['runner'])[1]})"
+                    notes.append((f"Runaway: runtime up, {why}", f"lane stop {name}"))
+            else:
+                info["state"] = "Paused" if (info["data"] or rec.get("has_run")) else "Prepared"
+                if info["runner"] and info["runner_alive"]:
+                    notes.append(("runner seat taken but the runtime is down", f"lane pause {name}"))
+            for seat in SEATS:
+                s = info[seat]
+                if s and not self.seat_alive(s)[0]:
+                    fix = f"lane stop {name}" if seat == "runner" else f"the next writer replaces it, or lane release {name} --seat writer"
+                    notes.append((f"stale {seat} seat: {self.fmt_seat(s)}", fix))
+            if not rec:
+                notes.append(("no seats recorded: the record is missing", "the list cannot tell runners from strangers here; lane stop clears a runtime"))
+        if info["class"] and host:
+            try:
+                prs = self.prs(name)
+                info["prs"] = prs
+                info["finish"] = "met" if self.finish_met(prs) else "not met"
+            except HostError as e:
+                notes.append((f"finish rule unknown: {e}", "restore access to the Git host"))
+        return info
+
+    # ----- sync with base (section 12.4 of the parked parts)
+    def sync(self, name, flatten=False):
+        wt = self.wt(name)
+        ad = self.admin_dir(name)
+        for marker, op in (("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"),
+                           ("rebase-merge", "rebase"), ("rebase-apply", "rebase")):
+            if ad and (ad / marker).exists():
+                return "Held", f"a {op} is in progress in {name}; finish or abort it"
+        try:
+            prs = self.prs(name)
+            open_prs = [p for p in prs if p["state"] == "OPEN"]
+            facts = self.repo_facts()
+        except HostError as e:
+            return "Held", str(e)
+        base = open_prs[0]["baseRefName"] if open_prs else facts["defaultBranchRef"]["name"]
+        replay = bool(facts.get("rebaseMergeAllowed"))
+        g = lambda *a: run(["git", *a], cwd=wt)
+        f = g("fetch", "origin")
+        if f.returncode:
+            return "Held", f"cannot fetch origin: {f.stderr.strip()}"
+        if g("rev-parse", "--verify", "-q", f"origin/{base}").returncode:
+            return "Held", f"origin/{base} does not exist"
+        ob, rb = f"origin/{base}", f"origin/{name}"
+        has_remote = g("rev-parse", "--verify", "-q", rb).returncode == 0
+        anc = lambda a, b: g("merge-base", "--is-ancestor", a, b).returncode == 0
+        remote_ahead = has_remote and not anc(rb, "HEAD")
+        if anc(ob, "HEAD") and not remote_ahead:
+            return "Current", f"{name} already contains {base}"
+        orig = g("rev-parse", "HEAD").stdout.strip()
+        if anc("HEAD", ob) and not remote_ahead:
+            m = g("merge", "--ff-only", ob)
+            return ("Moved", f"{name} moved to {base}") if m.returncode == 0 else ("Held", f"cannot move to {base}: {m.stderr.strip()}")
+        if g("status", "--porcelain").stdout.strip():
+            return "Held", f"{name} needs a catch-up with {base} but has uncommitted changes; commit them (a work-in-progress commit is fine)"
+
+        def conflict(kind, ref):
+            files = g("diff", "--name-only", "--diff-filter=U").stdout.split()
+            g(*(["rebase", "--abort"] if kind == "replay" else ["merge", "--abort"]))
+            g("reset", "--hard", orig)
+            return "Held", f"catching up with {ref} conflicts in {', '.join(files) or '?'}; resolve it in a commit that merges {ref} by hand, then run lane prep {name}"
+
+        if not replay:
+            if remote_ahead and g("merge", "--no-edit", rb).returncode:
+                return conflict("merge", rb)
+            if not anc(ob, "HEAD") and g("merge", "--no-edit", ob).returncode:
+                return conflict("merge", ob)
+            return "Merged", f"merged {base}{' and ' + rb if remote_ahead else ''} into {name}; the next push is a plain push"
+        merges = g("rev-list", "--merges", f"{ob}..HEAD").stdout.split()
+        if merges and not flatten:
+            return "Held", f"{name} has merge commits and a replay would flatten them; land by another method, or run lane prep {name} --flatten on your word (12.6)"
+        if remote_ahead and g("rebase", rb).returncode:
+            return conflict("replay", rb)
+        if g("rebase", ob).returncode:
+            return conflict("replay", ob)
+        pub = "; it is published, so the next push must refuse to overwrite commits it has not seen (git push --force-with-lease)" if has_remote else ""
+        return "Replayed", f"replayed {name} onto {base}{pub}"
+
+    # ----- operations
+    def create(self, name):
+        self.check_name(name)
+        clash = []
+        if self.git("show-ref", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0: clash.append("a local branch")
+        if self.wt(name).exists(): clash.append("a directory")
+        if self.data(name).exists(): clash.append("lane data")
+        if self.git("config", "--get", f"lane.{name}.class").returncode == 0: clash.append("a roster entry")
+        if clash:
+            raise Refuse(f"{name} is not unique: it already has {', '.join(clash)}. Names are unique and never reused while anything of the lane remains")
+        try:
+            base = self.repo_facts()["defaultBranchRef"]["name"]
+        except HostError as e:
+            raise Refuse(f"{e}; the base is never guessed (I7, I9)")
+        f = self.git("fetch", "origin", base)
+        if f.returncode:
+            raise Refuse(f"cannot fetch origin/{base}: {f.stderr.strip()}")
+        start = self.git("rev-parse", f"origin/{base}").stdout.strip()
+        a = self.git("worktree", "add", "--no-track", "-b", name, str(self.wt(name)), f"origin/{base}")
+        if a.returncode:
+            raise Refuse(f"git worktree add failed: {a.stderr.strip()}")
+        self.git("config", f"lane.{name}.class", self.default_class)
+        self.git("config", f"lane.{name}.created", now())
+        with self.record(name) as rec:
+            rec.update({"name": name, "class": self.default_class, "created": now(), "start": start,
+                        "start_base": base, "seats": {}, "idle_since": now()})
+        say(f"created {name} from origin/{base} at {start[:10]}")
+        out, line = self.sync(name)
+        say(f"prep: {out}: {line}")
+        return self.wt(name)
+
+    def prep(self, name, flatten=False):
+        self.require_wt(name)
+        self.klass(name)
+        info = self.inspect(name, ps_table(), host=False)
+        r = info["runner"]
+        if (info["procs"] or r) and not (r and not info["runner_alive"] and not info["procs"]):
+            say(self.warning(info, "start runtime (resume) will refuse unless you are its runner"))
+        return self.sync(name, flatten)
+
+    def require_wt(self, name):
+        if not self.wt(name).is_dir():
+            raise Refuse(f"{name}: no lane worktree. A lane whose worktree is gone is a Leftover; only `lane teardown {name}` ends it")
+
+    def warning(self, info, next_step):
+        lines = [f"lane {info['name']} (class {info['class'][0] if info['class'] else '?'}), state {info['state']}"]
+        if info["runner"]:
+            lines.append(f"  runner: {self.fmt_seat(info['runner'])}")
+        else:
+            lines.append("  runner: none recorded" + ("; the lane is Runaway" if info["procs"] else ""))
+        lines.append(f"  writer: {self.fmt_seat(info['writer'])}")
+        if info["procs"]:
+            lines.append(f"  runtime up since {min(p['start'] for p in info['procs'])}, port {info['rec'].get('port', '?')}")
+        lines.append(f"  next: {next_step}")
+        return "\n".join(lines)
+
+    def start(self, name, actor):
+        self.require_wt(name)
+        k = self.klass(name)
+        if k["runtime"] == "never":
+            raise Refuse(f"the class of {name} allows no runtime")
+        if actor["kind"] not in k["runners"]:
+            raise Refuse(f"the class of {name} does not allow a {actor['kind']} as runner (allowed: {', '.join(k['runners'])})")
+        missing = [d for d in self.cfg["runtime"]["dependencies"] if not shutil.which(d)]
+        if missing:
+            raise Refuse(f"dependencies missing: {', '.join(missing)}. Provide them; the tool never installs or starts them unasked")
+        info = self.inspect(name, ps_table(), host=False)
+        if info["procs"] and not info["runner_alive"]:
+            raise Refuse([f"{name} is Runaway: its runtime is up with no live runner",
+                          self.warning(info, f"run `lane stop {name}` first, then start it")])
+        cur = info["runner"]
+        if cur and info["runner_alive"] and not same_actor(cur, actor):
+            raise Refuse([f"{name} is run by {self.fmt_seat(cur)}", self.warning(info, "nobody takes over a runtime; start a new lane")])
+        if cur and info["runner_alive"]:
+            say(f"{name} is already running for you")
+            return
+        wt = self.wt(name)
+        with self.record(name) as rec:
+            if "port" not in rec:
+                rec["port"] = self.alloc_port()
+            port = rec["port"]
+        data = self.data(name)
+        first = not data.exists()
+        data.mkdir(parents=True, exist_ok=True)
+        cmd = [a.format(lane_id=self.lane_id(name), port=port, data=data, worktree=wt) for a in self.cfg["runtime"]["command"]]
+        log = open(data / "runtime.log", "ab")
+        proc = subprocess.Popen(cmd, cwd=wt, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True,
+                                env={**os.environ, "LANE_ID": self.lane_id(name), "LANE_NAME": name})
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break
+            with socket.socket() as s:
+                s.settimeout(0.2)
+                if s.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.1)
+        else:
+            self.kill_procs(self.lane_procs(name))
+            raise Refuse(f"the runtime of {name} did not listen on port {port} within 10 s; see {data / 'runtime.log'}")
+        if proc.poll() is not None:
+            raise Refuse(f"the runtime of {name} exited with {proc.returncode}; see {data / 'runtime.log'}")
+        with self.record(name) as rec:
+            actor["since"] = now()
+            rec["seats"]["runner"] = actor
+            rec["has_run"] = True
+            rec["idle_since"] = None
+        if actor["kind"] == "session":
+            self.ledger_add(actor["session_id"], name)
+        say(f"{name} running on http://127.0.0.1:{port} ({'data created' if first else 'data kept'})")
+
+    def alloc_port(self):
+        used = set()
+        for n in self.names(ps_table()):
+            r = self.read_record(n)
+            if r and r.get("port"):
+                used.add(r["port"])
+        base, span = self.cfg["runtime"]["port_base"], self.cfg["runtime"]["port_span"]
+        for port in range(base, base + span):
+            if port in used:
+                continue
+            with socket.socket() as s:
+                try:
+                    s.bind(("127.0.0.1", port))
+                    return port
+                except OSError:
+                    continue
+        raise Refuse("no free port in the range")
+
+    def pause(self, name, actor):
+        info = self.inspect(name, ps_table(), host=False)
+        if info["runner"] and not same_actor(info["runner"], actor):
+            raise Refuse(f"{name} is run by {self.fmt_seat(info['runner'])}; only its runner pauses it. Leaving it running")
+        if not info["runner"] and info["procs"]:
+            raise Refuse(f"{name} has no runner and its runtime is up: it is Runaway. Use `lane stop {name}`")
+        self.kill_procs(info["procs"])
+        if info["wt"] and info["admin"]:
+            with self.record(name) as rec:
+                rec.get("seats", {}).pop("runner", None)
+                if not rec.get("seats"):
+                    rec["idle_since"] = now()
+        say(f"{name} paused (data kept)")
+
+    def stop(self, name):
+        self.require_wt(name)
+        info = self.inspect(name, ps_table(), host=False)
+        if not info["procs"]:
+            raise Refuse(f"{name} has no runtime up, so it is not Runaway")
+        if info["runner_alive"]:
+            raise Refuse(f"{name} is run by {self.fmt_seat(info['runner'])}; it is Running, not Runaway. Only its runner pauses it")
+        self.kill_procs(info["procs"])
+        with self.record(name) as rec:
+            rec.get("seats", {}).pop("runner", None)
+            rec["has_run"] = True
+            if not rec.get("seats"):
+                rec["idle_since"] = now()
+        say(f"stopped the runtime of {name}; it is Paused")
+
+    # ----- teardown (I1, I2, I4, I13)
+    def teardown_checks(self, name, discard, unfinished):
+        """Every check, before anything is destroyed. Returns (blockers, lifted notes, info)."""
+        info = self.inspect(name, ps_table(), host=False)
+        if not (info["wt"] or info["branch"] or info["data"] or info["procs"] or info["admin"]
+                or self.git("config", "--get", f"lane.{name}.class").returncode == 0):
+            raise Refuse(f"{name}: nothing of this lane remains")
+        if info["wt"] and not info["class"]:
+            raise Refuse(f"{name}: its directory name matches no declared class; every step that removes something refuses (I9)")
+        block, lifted = [], []
+        for seat in SEATS:
+            s = info[seat]
+            if s and self.seat_alive(s)[0]:
+                block.append(f"a live {seat} sits in the {seat} seat: {self.fmt_seat(s)}. The human's word cannot lift this; the {seat} must end first")
+        wt = self.wt(name)
+        unsafe = []
+        if info["wt"]:
+            st = run(["git", "status", "--porcelain"], cwd=wt)
+            if st.returncode:
+                block.append(f"cannot read the worktree status: {st.stderr.strip()}")
+            elif st.stdout.strip():
+                unsafe.append(f"{len(st.stdout.splitlines())} uncommitted change(s) are in no safe copy")
+        host_msg = None
+        if info["branch"]:
+            fe = self.git("fetch", "origin", "--prune")
+            if fe.returncode:
+                block.append(f"cannot refresh the remote references ({fe.stderr.strip()}), so the safe copy cannot be proved; nothing guesses (I9)")
+            ahead = self.git("rev-list", name, "--not", "--remotes=origin").stdout.split()
+            if ahead:
+                heads = []
+                try:
+                    for p in self.prs(name):
+                        if p["state"] == "MERGED":
+                            fr = self.git("fetch", "origin", f"refs/pull/{p['number']}/head")
+                            if fr.returncode == 0:
+                                heads.append(p["headRefOid"])
+                            else:
+                                host_msg = f"cannot fetch the merged head of pull request {p['number']}: {fr.stderr.strip()}"
+                except HostError as e:
+                    host_msg = str(e)
+                left = self.git("rev-list", name, "--not", "--remotes=origin", *heads).stdout.split() if heads else ahead
+                if left:
+                    if host_msg:
+                        block.append(f"{len(left)} local commit(s) are on no remote and the safe copy could not be checked ({host_msg}); nothing guesses (I9)")
+                    else:
+                        unsafe.append(f"{len(left)} local commit(s) are on no remote and in no merged pull request head")
+        for u in unsafe:
+            (lifted if discard else block).append(f"safe copy: {u}" + ("" if discard else " (--discard lifts this, on the human's word)"))
+        if unfinished:
+            lifted.append("finish rule skipped on the human's word (--unfinished)")
+        else:
+            try:
+                prs = self.prs(name)
+                if not self.finish_met(prs):
+                    why = "no pull request exists" if not prs else "its pull request is still open"
+                    block.append(f"finish rule not met: {why} (--unfinished lifts this, on the human's word)")
+            except HostError as e:
+                block.append(f"finish rule cannot be checked: {e}; nothing guesses (I9)")
+        return block, lifted, info
+
+    def teardown(self, name, discard=False, unfinished=False):
+        os.chdir(self.main)
+        block, lifted, info = self.teardown_checks(name, discard, unfinished)
+        if block:
+            raise Refuse([f"teardown of {name} refused, nothing touched:"] + [f"  - {b}" for b in block])
+        for l in lifted:
+            say(f"on the human's word: {l}")
+        removed = []
+        if info["procs"]:
+            self.kill_procs(info["procs"]); removed.append("runtime")
+        if info["data"]:
+            shutil.rmtree(self.data(name)); removed.append("data")
+        wt = self.wt(name)
+        if info["wt"]:
+            r = self.git("worktree", "remove", "--force", "--force", str(wt))
+            if r.returncode:
+                raise Refuse(f"{name}: data is already gone but the worktree could not be removed ({r.stderr.strip()}); it is now a Leftover, run teardown again")
+            removed.append("worktree")
+        ad = self.admin_dir(name)
+        if ad is not None:
+            shutil.rmtree(ad); removed.append("worktree entry")
+        if info["branch"]:
+            r = self.git("branch", "-D", name)
+            if r.returncode == 0: removed.append("local branch")
+        self.git("config", "--remove-section", f"lane.{name}")
+        for led in (self.common / "lane-sessions").glob("*") if (self.common / "lane-sessions").is_dir() else []:
+            names = [n for n in led.read_text().split() if n != name]
+            led.write_text("\n".join(names) + ("\n" if names else "")) if names else led.unlink()
+        try:
+            self.data_root.rmdir()
+        except OSError:
+            pass
+        say(f"{name} torn down: {', '.join(removed) or 'only its roster entry'}")
+
+    # ----- housekeeping
+    def housekeeping(self):
+        os.chdir(self.main)
+        table = ps_table()
+        report, limit = [], self.cfg["housekeeping"]["resting_days"] * 86400
+        for name in self.names(table):
+            info = self.inspect(name, table)
+            if info["finish"] == "met":
+                try:
+                    self.teardown(name)
+                    report.append((name, "torn down: finish rule met"))
+                    continue
+                except Refuse as e:
+                    report.append((name, "finished, teardown refused: " + " ".join(e.reasons)))
+            for note, fix in info["notes"]:
+                report.append((name, f"{note} -> {fix}"))
+            if info["wt"] and info["rec"] and not any(info[s] and self.seat_alive(info[s])[0] for s in SEATS):
+                with self.record(name) as rec:
+                    rec["idle_since"] = rec.get("idle_since") or now()
+                    idle = rec["idle_since"]
+                if age_seconds(idle) > limit:
+                    report.append((name, f"resting since {idle}, over the {self.cfg['housekeeping']['resting_days']}-day limit -> finish it, or `lane teardown {name}` on the human's word"))
+        return report
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_list(P, a):
+    table = ps_table()
+    infos = [P.inspect(n, table) for n in P.names(table)]
+    if a.json:
+        print(json.dumps([{**{k: v for k, v in i.items() if k in ("name", "state", "finish", "wt", "notes")},
+                           "port": i["rec"].get("port"), "runner": i["runner"], "writer": i["writer"]} for i in infos], indent=1))
+        return
+    if not infos:
+        print("no lanes")
+        return
+    rows = [("LANE", "STATE", "FINISH", "RUNNER", "WRITER", "PORT", "RUNTIME SINCE")]
+    for i in infos:
+        runner = "-" if not i["runner"] else f"{i['runner']['label']}{'' if i['runner_alive'] else ' (stale)'}"
+        writer = "-" if not i["writer"] else f"{i['writer']['label']}{'' if P.seat_alive(i['writer'])[0] else ' (stale)'}"
+        since = min((p["start"] for p in i["procs"]), default="-")
+        rows.append((i["name"], i["state"], i["finish"], runner, writer, str(i["rec"].get("port", "-")), since))
+    widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
+    for r in rows:
+        print("  ".join(v.ljust(w) for v, w in zip(r, widths)).rstrip())
+    for i in infos:
+        for note, fix in i["notes"]:
+            print(f"! {i['name']}: {note}\n    fix: {fix}")
+
+
+def cmd_seats(P, a):
+    P.klass(a.name) if P.wt(a.name).is_dir() else None
+    print(P.warning(P.inspect(a.name, ps_table(), host=False), "see section 7.1"))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="lane", description="The lane tool (see docs/model).")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def add(name, help, *args):
+        p = sub.add_parser(name, help=help)
+        for x in args:
+            p.add_argument(*x[0], **x[1])
+        return p
+
+    nm = (("name",), {})
+    who = [(("--as",), {"dest": "kind", "choices": ["person", "script", "session"]}), (("--label",), {})]
+    add("create", "create a lane from a brief's name", nm)
+    add("prep", "prepare a lane: warn if it runs, then sync with base", nm, (("--flatten",), {"action": "store_true"}))
+    add("start", "start the runtime (you become its runner)", nm, *who)
+    add("resume", "prep, then start", nm, (("--flatten",), {"action": "store_true"}), *who)
+    add("pause", "pause the runtime you run", (("name",), {"nargs": "?"}), (("--all",), {"action": "store_true"}), *who)
+    add("stop", "stop the runtime of a Runaway lane", nm)
+    add("write", "take the writer seat", nm, *who)
+    add("release", "empty a seat you hold", nm, (("--seat",), {"choices": SEATS, "default": "writer"}), *who)
+    add("seats", "show the seats of a lane (the section 7.1 warning)", nm)
+    add("list", "list lanes, Leftovers and anomalies", (("--json",), {"action": "store_true"}))
+    add("teardown", "remove a lane for good", nm, (("--discard",), {"action": "store_true", "help": "the human's word: discard work the safe copy lacks (I1)"}),
+        (("--unfinished",), {"action": "store_true", "help": "the human's word: tear down before the finish rule is met (I4)"}))
+    add("housekeeping", "tear down finished lanes, report the rest")
+    add("heartbeat", "refresh the seats of a session", (("--session-id",), {"required": True}))
+    a = ap.parse_args(argv)
+    try:
+        P = Project()
+        if a.cmd == "create":
+            print(P.create(a.name))
+        elif a.cmd == "prep":
+            out, line = P.prep(a.name, a.flatten); print(f"{out}: {line}")
+            return 0 if out != "Held" else 1
+        elif a.cmd in ("start", "resume"):
+            if a.cmd == "resume":
+                out, line = P.prep(a.name, a.flatten); say(f"prep: {out}: {line}")
+                if out == "Held":
+                    raise Refuse(f"prep held: {line}")
+            P.start(a.name, actor_from_env(a.kind, a.label))
+        elif a.cmd == "pause":
+            actor = actor_from_env(a.kind, a.label)
+            if a.all:
+                table = ps_table()
+                mine = [n for n in P.names(table) if (r := P.inspect(n, table, host=False))["runner"] and same_actor(r["runner"], actor)]
+                for n in mine:
+                    P.pause(n, actor)
+                say(f"paused {len(mine)} lane(s)")
+            elif a.name:
+                P.pause(a.name, actor)
+            else:
+                raise Refuse("name a lane, or use --all")
+        elif a.cmd == "stop":
+            P.stop(a.name)
+        elif a.cmd == "write":
+            P.require_wt(a.name); P.klass(a.name)
+            P.take_seat(a.name, "writer", actor_from_env(a.kind, a.label)); say(f"writer seat of {a.name} taken")
+        elif a.cmd == "release":
+            P.release_seat(a.name, a.seat, actor_from_env(a.kind, a.label)); say(f"{a.seat} seat of {a.name} emptied")
+        elif a.cmd == "seats":
+            cmd_seats(P, a)
+        elif a.cmd == "list":
+            cmd_list(P, a)
+        elif a.cmd == "teardown":
+            P.teardown(a.name, a.discard, a.unfinished)
+        elif a.cmd == "housekeeping":
+            for name, line in P.housekeeping():
+                print(f"{name}: {line}")
+        elif a.cmd == "heartbeat":
+            P.heartbeat(a.session_id)
+        return 0
+    except Refuse as e:
+        for r in e.reasons:
+            say(r)
+        return 1
+    except HostError as e:
+        say(str(e))
+        return 1
+    except OSError as e:
+        say(f"cannot make a check ({e}); nothing guesses (I9)")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
