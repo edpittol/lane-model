@@ -258,6 +258,23 @@ class Teardown(Base):
         self.assertEqual(sh("git", "config", "--get", "lane.alpha-one.created", cwd=self.main, check=False).returncode, 1)
         self.assertEqual(self.listing(), [])
 
+    def test_unremovable_worktree_or_data_refuses_before_destruction(self):
+        self.ok("start", "alpha-one"); self.ok("pause", "alpha-one")
+        (self.wt("alpha-one") / "locked").mkdir()
+        self.commit_in("alpha-one", "locked/work.txt", push=True)
+        self.prs("alpha-one", {"number": 1, "state": "MERGED", "headRefOid": self.git("rev-parse", "alpha-one"), "baseRefName": "main"})
+        data = next((self.tmp / "data").rglob("hits.db")).parent
+        for locked in (self.wt("alpha-one") / "locked", data):
+            locked.chmod(0o555)
+            self.addCleanup(lambda p=locked: p.exists() and p.chmod(0o755))
+            self.assertIn("cannot be removed", self.refused("teardown", "alpha-one", "--discard", "--unfinished"))
+            self.assertTrue((self.wt("alpha-one") / "locked" / "work.txt").is_file())
+            self.assertTrue((data / "hits.db").is_file())
+            locked.chmod(0o755)
+        self.ok("teardown", "alpha-one")
+        self.assertFalse(self.wt("alpha-one").exists())
+        self.assertFalse(data.exists())
+
     def test_squash_landing_uses_merged_head_when_branch_is_deleted(self):
         self.commit_in("alpha-one", push=True)
         head = self.git("rev-parse", "alpha-one")

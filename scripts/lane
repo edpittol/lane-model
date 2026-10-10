@@ -84,6 +84,16 @@ def proc_start(pid: int):
     return s or None
 
 
+def unremovable(path: Path):
+    """The first directory whose entries cannot be deleted, which would stop removing path halfway. None if none."""
+    if not os.access(path.parent, os.W_OK | os.X_OK):
+        return path.parent
+    for d, _, _ in os.walk(path):
+        if not os.access(d, os.R_OK | os.W_OK | os.X_OK):
+            return Path(d)
+    return None
+
+
 def descendants(table, roots):
     kids, out, todo = {}, set(roots), list(roots)
     for r in table:
@@ -728,6 +738,10 @@ class Project:
                     block.append(f"finish rule not met: {why} (--unfinished lifts this, on the human's word)")
             except HostError as e:
                 block.append(f"finish rule cannot be checked: {e}; nothing guesses (I9)")
+        for what, present, path in (("lane worktree", info["wt"], wt), ("data", info["data"], self.data(name))):
+            if present and (d := unremovable(path)):
+                block.append(f"the {what} cannot be removed: {d} does not allow deleting its entries. "
+                             "The human's word cannot lift this; fix the permissions, then run teardown again")
         return block, lifted, info
 
     def teardown(self, name, discard=False, unfinished=False):
@@ -740,14 +754,14 @@ class Project:
         removed = []
         if info["procs"]:
             self.kill_procs(info["procs"]); removed.append("runtime")
-        if info["data"]:
-            shutil.rmtree(self.data(name)); removed.append("data")
         wt = self.wt(name)
         if info["wt"]:
             r = self.git("worktree", "remove", "--force", "--force", str(wt))
             if r.returncode:
-                raise Refuse(f"{name}: data is already gone but the worktree could not be removed ({r.stderr.strip()}); it is now a Leftover, run teardown again")
+                raise Refuse(f"{name}: the worktree could not be removed ({r.stderr.strip()}); its data and branch are kept, run teardown again")
             removed.append("worktree")
+        if info["data"]:
+            shutil.rmtree(self.data(name)); removed.append("data")
         ad = self.admin_dir(name)
         if ad is not None:
             shutil.rmtree(ad); removed.append("worktree entry")
