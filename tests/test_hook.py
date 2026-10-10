@@ -45,7 +45,7 @@ class Writes(Hook):
         self.assertEqual(d, "deny"); self.assertIn("sess-aaa", why)
         self.assertEqual(self.listing()[0]["writer"]["session_id"], "sess-aaaa-1111")
 
-    def test_unreadable_class_file_denies_writes(self):
+    def test_unreadable_lane_file_denies_writes(self):
         (self.main / "lanes.toml").write_text("nonsense = ")
         self.assertEqual(self.tool("Write", file_path=str(self.main / "a.txt"))[0], "deny")
 

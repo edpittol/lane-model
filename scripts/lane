@@ -30,7 +30,7 @@ HOST_DOWN = "the Git host could not be asked"
 LANE_ID_RE = re.compile(r"--lane-id (\S+)")
 PS_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$")
 SEATS = ("runner", "writer")
-CLASS_KEYS = {"default", "marker", "runtime", "runners", "safe_copy", "finish_rule", "pull_request", "base"}
+LANE_KEYS = {"runtime", "runners", "safe_copy", "finish_rule", "pull_request", "base"}
 
 
 class Refuse(Exception):
@@ -131,29 +131,23 @@ def load_config(main: Path) -> dict:
     try:
         cfg = tomllib.loads(path.read_text())
     except (OSError, tomllib.TOMLDecodeError) as e:
-        raise Refuse(f"cannot read the class file {CONFIG_NAME}: {e}")
+        raise Refuse(f"cannot read the lane file {CONFIG_NAME}: {e}")
     problems = []
-    classes = cfg.get("class", {})
-    if not classes:
-        problems.append("no class declared")
-    defaults = [c for c, v in classes.items() if v.get("default")]
-    if len(defaults) != 1:
-        problems.append("exactly one class must be the default")
-    for c, v in classes.items():
-        if set(v) - CLASS_KEYS or CLASS_KEYS - {"default"} - set(v):
-            problems.append(f"class {c}: settings must be exactly {sorted(CLASS_KEYS)}")
-            continue
+    for sec in ("lane", "naming", "paths", "runtime", "seats", "housekeeping"):
+        if sec not in cfg:
+            problems.append(f"section [{sec}] missing")
+    v = cfg.get("lane", {})
+    if "lane" in cfg and set(v) != LANE_KEYS:
+        problems.append(f"[lane]: settings must be exactly {sorted(LANE_KEYS)}")
+    elif "lane" in cfg:
         if v["runtime"] not in ("never", "on-demand"):
-            problems.append(f"class {c}: runtime {v['runtime']!r} unknown")
+            problems.append(f"[lane]: runtime {v['runtime']!r} unknown")
         if not set(v["runners"]) <= {"person", "script", "session"}:
-            problems.append(f"class {c}: runners {v['runners']!r} unknown")
+            problems.append(f"[lane]: runners {v['runners']!r} unknown")
         for key, only in (("safe_copy", "remote-or-merged-pr-head"), ("finish_rule", "pull-request-merged-or-closed"),
                           ("pull_request", "required"), ("base", "pull-request-target")):
             if v[key] != only:
-                problems.append(f"class {c}: {key} {v[key]!r} is not implemented by this tool")
-    for sec in ("naming", "paths", "runtime", "seats", "housekeeping"):
-        if sec not in cfg:
-            problems.append(f"section [{sec}] missing")
+                problems.append(f"[lane]: {key} {v[key]!r} is not implemented by this tool")
     if not problems:
         rt = cfg["runtime"]
         if not any("{lane_id}" in a for a in rt["command"]):
@@ -163,7 +157,7 @@ def load_config(main: Path) -> dict:
         except re.error as e:
             problems.append(f"naming.pattern: {e}")
     if problems:
-        raise Refuse([f"class file {CONFIG_NAME} cannot be used (I9): {p}" for p in problems])
+        raise Refuse([f"lane file {CONFIG_NAME} cannot be used (I9): {p}" for p in problems])
     return cfg
 
 
@@ -204,10 +198,9 @@ class Project:
         self.pid = f"{slug}-{hashlib.sha1(str(self.main).encode()).hexdigest()[:6]}"
         self.wtroot = self.main / self.cfg["paths"]["worktrees"]
         self.data_root = Path(os.environ.get("LANE_DATA_ROOT") or Path.home() / ".local/share/lane") / self.pid
-        self.default_class = next(c for c, v in self.cfg["class"].items() if v.get("default"))
         self.naming = re.compile(self.cfg["naming"]["pattern"])
 
-    # ----- identity (I6): every id is a pure function of class and name
+    # ----- identity (I6): every id is a pure function of the name
     def lane_id(self, name): return f"{self.pid}-lane-{name}"
     def wt(self, name): return self.wtroot / name
     def data(self, name): return self.data_root / name
@@ -217,21 +210,6 @@ class Project:
         n = self.cfg["naming"]
         if not (n["min_length"] <= len(name) <= n["max_length"] and self.naming.fullmatch(name)):
             raise Refuse(f"{name!r} breaks the naming rule: /{n['pattern']}/, {n['min_length']} to {n['max_length']} characters")
-
-    def class_of(self, dirname):
-        for cid, v in self.cfg["class"].items():
-            if v["marker"] and dirname.startswith(v["marker"]):
-                return cid, dirname[len(v["marker"]):]
-        n = self.cfg["naming"]
-        if n["min_length"] <= len(dirname) <= n["max_length"] and self.naming.fullmatch(dirname):
-            return self.default_class, dirname
-        return None
-
-    def klass(self, name):
-        found = self.class_of(name)
-        if not found:
-            raise Refuse(f"{name}: its directory name matches no declared class, so nothing guesses (I9). Declare the class in {CONFIG_NAME}")
-        return self.cfg["class"][found[0]]
 
     # ----- records
     def admin_dir(self, name):
@@ -366,7 +344,7 @@ class Project:
 
     @staticmethod
     def finish_met(prs):
-        """Class rule: a pull request exists and none is open (merged or closed)."""
+        """Finish rule: a pull request exists and none is open (merged or closed)."""
         return bool(prs) and not any(p["state"] == "OPEN" for p in prs)
 
     # ----- processes of a lane
@@ -397,10 +375,10 @@ class Project:
     # ----- inventory (I10)
     def names(self, table):
         found = set()
-        r = self.git("config", "--get-regexp", r"^lane\..*\.class$")
+        r = self.git("config", "--get-regexp", r"^lane\..*\.created$")
         for line in r.stdout.splitlines():
             key = line.split()[0]
-            found.add(key[len("lane."):-len(".class")])
+            found.add(key[len("lane."):-len(".created")])
         if self.wtroot.is_dir():
             found |= {d.name for d in self.wtroot.iterdir() if d.is_dir()}
         if self.data_root.is_dir():
@@ -424,7 +402,6 @@ class Project:
     def inspect(self, name, table, host=True):
         wt = self.wt(name)
         info = {"name": name, "wt": wt.is_dir(), "notes": [], "finish": "unknown", "prs": None}
-        info["class"] = self.class_of(name)
         info["branch"] = self.git("show-ref", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0
         info["data"] = self.data(name).is_dir()
         info["procs"] = self.lane_procs(name, table)
@@ -441,10 +418,7 @@ class Project:
                                          ("runtime up", bool(info["procs"])), ("worktree entry", bool(info["admin"]))) if present]
             notes.append((f"worktree gone; remaining: {', '.join(left) or 'roster entry'}", f"lane teardown {name}"))
         else:
-            if not info["class"]:
-                info["state"] = "Anomaly"
-                notes.append(("directory name matches no declared class", f"declare the class in {CONFIG_NAME}"))
-            elif info["procs"]:
+            if info["procs"]:
                 info["state"] = "Running" if info["runner_alive"] else "Runaway"
                 if not info["runner_alive"]:
                     why = "no runner recorded" if not info["runner"] else f"runner gone ({self.seat_alive(info['runner'])[1]})"
@@ -460,7 +434,7 @@ class Project:
                     notes.append((f"stale {seat} seat: {self.fmt_seat(s)}", fix))
             if not rec:
                 notes.append(("no seats recorded: the record is missing", "the list cannot tell runners from strangers here; lane stop clears a runtime"))
-        if info["class"] and host:
+        if host:
             try:
                 prs = self.prs(name)
                 info["prs"] = prs
@@ -536,7 +510,7 @@ class Project:
         if self.git("show-ref", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0: clash.append("a local branch")
         if self.wt(name).exists(): clash.append("a directory")
         if self.data(name).exists(): clash.append("lane data")
-        if self.git("config", "--get", f"lane.{name}.class").returncode == 0: clash.append("a roster entry")
+        if self.git("config", "--get", f"lane.{name}.created").returncode == 0: clash.append("a roster entry")
         if clash:
             raise Refuse(f"{name} is not unique: it already has {', '.join(clash)}. Names are unique and never reused while anything of the lane remains")
         try:
@@ -550,10 +524,9 @@ class Project:
         a = self.git("worktree", "add", "--no-track", "-b", name, str(self.wt(name)), f"origin/{base}")
         if a.returncode:
             raise Refuse(f"git worktree add failed: {a.stderr.strip()}")
-        self.git("config", f"lane.{name}.class", self.default_class)
         self.git("config", f"lane.{name}.created", now())
         with self.record(name) as rec:
-            rec.update({"name": name, "class": self.default_class, "created": now(), "start": start,
+            rec.update({"name": name, "created": now(), "start": start,
                         "start_base": base, "seats": {}, "idle_since": now()})
         say(f"created {name} from origin/{base} at {start[:10]}")
         out, line = self.sync(name)
@@ -562,7 +535,6 @@ class Project:
 
     def prep(self, name, flatten=False, actor=None):
         self.require_wt(name)
-        self.klass(name)
         info = self.inspect(name, ps_table(), host=False)
         r = info["runner"]
         if (info["procs"] or r) and not (r and not info["runner_alive"] and not info["procs"]):
@@ -574,7 +546,7 @@ class Project:
             raise Refuse(f"{name}: no lane worktree. A lane whose worktree is gone is a Leftover; only `lane teardown {name}` ends it")
 
     def warning(self, info, next_step):
-        lines = [f"lane {info['name']} (class {info['class'][0] if info['class'] else '?'}), state {info['state']}"]
+        lines = [f"lane {info['name']}, state {info['state']}"]
         if info["runner"]:
             lines.append(f"  runner: {self.fmt_seat(info['runner'])}")
         else:
@@ -587,11 +559,11 @@ class Project:
 
     def start(self, name, actor):
         self.require_wt(name)
-        k = self.klass(name)
+        k = self.cfg["lane"]
         if k["runtime"] == "never":
-            raise Refuse(f"the class of {name} allows no runtime")
+            raise Refuse("this project allows no runtime")
         if actor["kind"] not in k["runners"]:
-            raise Refuse(f"the class of {name} does not allow a {actor['kind']} as runner (allowed: {', '.join(k['runners'])})")
+            raise Refuse(f"this project does not allow a {actor['kind']} as runner (allowed: {', '.join(k['runners'])})")
         missing = [d for d in self.cfg["runtime"]["dependencies"] if not shutil.which(d)]
         if missing:
             raise Refuse(f"dependencies missing: {', '.join(missing)}. Provide them; the tool never installs or starts them unasked")
@@ -692,10 +664,8 @@ class Project:
         """Every check, before anything is destroyed. Returns (blockers, lifted notes, info)."""
         info = self.inspect(name, ps_table(), host=False)
         if not (info["wt"] or info["branch"] or info["data"] or info["procs"] or info["admin"]
-                or self.git("config", "--get", f"lane.{name}.class").returncode == 0):
+                or self.git("config", "--get", f"lane.{name}.created").returncode == 0):
             raise Refuse(f"{name}: nothing of this lane remains")
-        if info["wt"] and not info["class"]:
-            raise Refuse(f"{name}: its directory name matches no declared class; every step that removes something refuses (I9)")
         block, lifted = [], []
         for seat in SEATS:
             s = info[seat]
@@ -833,7 +803,6 @@ def cmd_list(P, a):
 
 
 def cmd_seats(P, a):
-    P.klass(a.name) if P.wt(a.name).is_dir() else None
     print(P.warning(P.inspect(a.name, ps_table(), host=False), "see section 7.1"))
 
 
@@ -892,7 +861,7 @@ def main(argv=None):
         elif a.cmd == "stop":
             P.stop(a.name)
         elif a.cmd == "write":
-            P.require_wt(a.name); P.klass(a.name)
+            P.require_wt(a.name)
             P.take_seat(a.name, "writer", actor_from_env(a.kind, a.label)); say(f"writer seat of {a.name} taken")
         elif a.cmd == "release":
             P.release_seat(a.name, a.seat, actor_from_env(a.kind, a.label)); say(f"{a.seat} seat of {a.name} emptied")

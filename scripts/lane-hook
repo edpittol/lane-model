@@ -128,7 +128,7 @@ def pre_tool_use():
     except lane.Refuse as e:
         if str(e).startswith("not inside"):
             return
-        deny("The lane class file cannot be read, so nothing guesses (I9): " + "; ".join(e.reasons))
+        deny("The lane file cannot be read, so nothing guesses (I9): " + "; ".join(e.reasons))
     if tool in ("Edit", "Write", "NotebookEdit"):
         path = ti.get("file_path") or ti.get("notebook_path")
         if not path:

@@ -10,7 +10,7 @@ The model is in `docs/model/`: V3 is the interface (`2026-10-06-lane-model-v3.md
 |---|---|
 | `scripts/lane` | The lane tool. Python 3.11+, standard library only |
 | `scripts/lane-hook` | The one Claude Code hook entry point |
-| `lanes.toml` | The class file: naming rule, paths, runtime, the pull request class |
+| `lanes.toml` | The lane file: naming rule, paths, runtime, lane settings |
 | `.claude/settings.json` | Wires the hooks |
 | `sample/server.py` | A small runtime with real state, so pause, resume and teardown have something to keep and remove |
 | `AGENTS.md` | The method, for the agent |
@@ -45,4 +45,4 @@ python3 -m unittest discover tests
 
 The lane tool here is one implementation of the model, not the model itself. Each project can have its own lane tool and its own settings, as long as it keeps the model in `docs/model/`.
 
-To start from this one, copy `scripts/lane`, `scripts/lane-hook` and `lanes.toml`, edit the class file (slug, runtime command, naming rule), and add the hooks to the project's `.claude/settings.json`. The runtime command must carry `{lane_id}`.
+To start from this one, copy `scripts/lane`, `scripts/lane-hook` and `lanes.toml`, edit the lane file (slug, runtime command, naming rule), and add the hooks to the project's `.claude/settings.json`. The runtime command must carry `{lane_id}`.
