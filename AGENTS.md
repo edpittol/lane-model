@@ -40,7 +40,11 @@ The hooks refuse Edit, Write and NotebookEdit in the main worktree, and refuse B
 - an interpreter that writes (`python3 -c`, `node -e`, `bash -c`, a script that writes)
 - `find -delete`, `xargs`, `eval`
 - a `cd` into the main worktree from inside a lane
+- a path into the main worktree from inside a lane (an absolute path, `git -C <main>`)
+- a Bash command whose working directory is outside the project
 - any write by a person in a terminal
+
+Run every command that writes from your lane's directory, on paths inside your lane.
 
 A session that has entered a worktree is also stopped by the harness itself, which cannot be turned off.
 
