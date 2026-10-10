@@ -93,6 +93,25 @@ class Create(Base):
         self.ok("create", "alpha-one")
         self.assertIn("not unique", self.refused("create", "alpha-one"))
 
+    def test_name_left_on_the_git_host_is_not_reused(self):
+        self.prs("old-merged", {"number": 4, "state": "MERGED", "headRefOid": "0" * 40, "baseRefName": "main", "url": ""})
+        err = self.refused("create", "old-merged")
+        self.assertIn("pull request #4 (merged)", err)
+        self.assertFalse(self.wt("old-merged").exists())
+        sh("git", "push", "-q", "origin", "main:refs/heads/old-closed", cwd=self.main)
+        self.prs("old-closed", {"number": 2, "state": "CLOSED", "headRefOid": "0" * 40, "baseRefName": "main", "url": ""})
+        err = self.refused("create", "old-closed")
+        self.assertIn("pull request #2 (closed)", err)
+        self.assertIn("a branch on origin", err)
+        sh("git", "push", "-q", "origin", "main:refs/heads/old-branch", cwd=self.main)
+        self.assertIn("a branch on origin", self.refused("create", "old-branch"))
+        self.assertFalse(self.git("branch", "--list", "old-*"))
+
+    def test_uniqueness_is_never_guessed_when_origin_is_unreachable(self):
+        sh("git", "remote", "set-url", "origin", str(self.tmp / "gone.git"), cwd=self.main)
+        self.assertIn("uniqueness is never guessed", self.refused("create", "alpha-one"))
+        self.assertFalse(self.wt("alpha-one").exists())
+
     def test_base_is_never_guessed_when_host_is_down(self):
         (self.gh / "DOWN").write_text("")
         self.assertIn("Git host could not be asked", self.refused("create", "alpha-one"))
