@@ -157,6 +157,17 @@ class Runtime(Base):
         self.assertEqual(self.state("alpha-one"), "Paused")
         self.ok("start", "alpha-one"); self.ok("pause", "alpha-one")
 
+    def test_stale_runner_with_runtime_down_names_start_as_its_fix(self):
+        self.ok("start", "alpha-one", "--as", "script", "--label", "nightly")
+        self.ok("pause", "alpha-one", "--as", "script", "--label", "nightly")
+        dead = self.dead_pid()
+        self.edit_record("alpha-one", lambda r: r["seats"].update(runner={"kind": "script", "label": "nightly", "pid": dead,
+                                                                           "pid_start": None, "since": "2026-10-10T00:00:00Z"}))
+        out = self.ok("list").stdout
+        self.assertIn("lane start alpha-one", out); self.assertNotIn("lane stop", out)
+        self.refused("stop", "alpha-one")
+        self.ok("start", "alpha-one"); self.ok("pause", "alpha-one")
+
     def test_person_outlives_the_shell_that_started_it(self):
         self.ok("start", "alpha-one", "--as", "person", "--label", "ed")
         dead = self.dead_pid()
@@ -200,7 +211,8 @@ class Seats(Base):
         self.assertIn("taken by fixer", self.refused("write", "alpha-one", "--as", "script", "--label", "bot"))
         dead = self.dead_pid()
         self.edit_record("alpha-one", lambda r: r["seats"]["writer"].update(pid=dead))
-        self.assertIn("stale writer seat", self.ok("list").stdout)
+        out = self.ok("list").stdout
+        self.assertIn("stale writer seat", out); self.assertIn("lane write alpha-one", out); self.assertNotIn("lane release", out)
         self.ok("write", "alpha-one", "--as", "script", "--label", "bot")
         self.ok("release", "alpha-one", "--as", "script", "--label", "bot")
 
