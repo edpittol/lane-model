@@ -2,7 +2,7 @@
 
 An implementation of the lane model (`docs/model/`) with Git, GitHub and Claude Code. A lane is one task with its own worktree, runtime and data. The tool keeps lanes apart, keeps runtimes off when nobody needs them, and refuses to lose work.
 
-The model is in `docs/model/`: V3 is the interface (`2026-10-06-lane-model-v3.md`), its parked parts hold the Git and harness integrations and the change log.
+The model is in `docs/model/`: V3 is the interface (`2026-10-06-lane-model-v3.md`).
 
 ## What is here
 

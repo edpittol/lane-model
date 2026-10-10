@@ -20,7 +20,7 @@ Lanes have two purposes, and every rule below supports one of them.
 - **Dependencies.** Everything outside the project's files that the lane's runtime needs to start, such as a container engine, a database server or network access.
 - **Integration.** A tool the model does not need but that projects usually use with it, such as a version control system or an agent harness. An integration binds the model's terms to its own objects, and may add terms, lane settings, transitions, checks and actors. It never relaxes an invariant.
 - **Implementation.** What a project builds and writes to follow the model: its lane tool, its lane settings, its naming rule, its housekeeping limit, its workflow docs and its bindings. Wherever the model leaves a choice to the implementation, the project makes it there. The project checks the implementation against the model, never the other way round.
-- **Binding.** The part of an implementation that says what plays each term of the model in the project: which command pauses a lane, what records the seats, which capabilities the environment offers. An integration brings its own binding for the terms it adds. Each project keeps its binding with its workflow docs.
+- **Binding.** The part of an implementation that says what plays each term of the model in the project: which command pauses a lane, what records the seats, which capabilities the environment offers. An integration brings its own binding for the terms it adds.
 
 ### The model
 

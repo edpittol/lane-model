@@ -430,7 +430,12 @@ class Project:
             for seat in SEATS:
                 s = info[seat]
                 if s and not self.seat_alive(s)[0]:
-                    fix = f"lane stop {name}" if seat == "runner" else f"the next writer replaces it, or lane release {name} --seat writer"
+                    if seat == "writer":
+                        fix = f"the next writer replaces it (lane write {name})"
+                    elif info["procs"]:
+                        fix = f"lane stop {name}"
+                    else:
+                        fix = f"the next runner replaces it (lane start {name})"
                     notes.append((f"stale {seat} seat: {self.fmt_seat(s)}", fix))
             if not rec:
                 notes.append(("no seats recorded: the record is missing", "the list cannot tell runners from strangers here; lane stop clears a runtime"))
@@ -443,7 +448,7 @@ class Project:
                 notes.append((f"finish rule unknown: {e}", "restore access to the Git host"))
         return info
 
-    # ----- sync with base (section 12.4 of the parked parts)
+    # ----- sync with base
     def sync(self, name, flatten=False, actor=None):
         wt = self.wt(name)
         ad = self.admin_dir(name)
@@ -495,7 +500,7 @@ class Project:
             return "Merged", f"merged {base}{' and ' + rb if remote_ahead else ''} into {name}; the next push is a plain push"
         merges = g("rev-list", "--merges", f"{ob}..HEAD").stdout.split()
         if merges and not flatten:
-            return "Held", f"{name} has merge commits and a replay would flatten them; land by another method, or run lane prep {name} --flatten on your word (12.6)"
+            return "Held", f"{name} has merge commits and a replay would flatten them; land by another method, or run lane prep {name} --flatten on your word"
         if remote_ahead and g("rebase", rb).returncode:
             return conflict("replay", rb)
         if g("rebase", ob).returncode:
@@ -511,12 +516,20 @@ class Project:
         if self.wt(name).exists(): clash.append("a directory")
         if self.data(name).exists(): clash.append("lane data")
         if self.git("config", "--get", f"lane.{name}.created").returncode == 0: clash.append("a roster entry")
-        if clash:
-            raise Refuse(f"{name} is not unique: it already has {', '.join(clash)}. Names are unique and never reused while anything of the lane remains")
         try:
             base = self.repo_facts()["defaultBranchRef"]["name"]
+            prs = self.prs(name)
         except HostError as e:
-            raise Refuse(f"{e}; the base is never guessed (I7, I9)")
+            raise Refuse(f"{e}; the base and the name's uniqueness are never guessed (I6, I7, I9)")
+        # Teardown keeps the remote branch and the pull request, and both are found by the name, so a lane
+        # created under that name again would inherit them: their finish rule, their commits.
+        clash += [f"pull request #{p['number']} ({p['state'].lower()})" for p in prs]
+        ls = self.git("ls-remote", "--heads", "origin", f"refs/heads/{name}")
+        if ls.returncode:
+            raise Refuse(f"cannot ask origin for a branch named {name}: {ls.stderr.strip()}; uniqueness is never guessed (I6, I9)")
+        if ls.stdout.strip(): clash.append("a branch on origin")
+        if clash:
+            raise Refuse(f"{name} is not unique: it already has {', '.join(clash)}. Names are unique and never reused while anything of the lane remains, on the Git host included. Choose another name")
         f = self.git("fetch", "origin", base)
         if f.returncode:
             raise Refuse(f"cannot fetch origin/{base}: {f.stderr.strip()}")
@@ -574,7 +587,7 @@ class Project:
         cur = info["runner"]
         if cur and info["runner_alive"] and not same_actor(cur, actor):
             raise Refuse([f"{name} is run by {self.fmt_seat(cur)}", self.warning(info, "nobody takes over a runtime; start a new lane")])
-        if cur and info["runner_alive"]:
+        if cur and info["runner_alive"] and info["procs"]:
             say(f"{name} is already running for you")
             return
         wt = self.wt(name)
