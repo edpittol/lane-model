@@ -162,7 +162,7 @@ Each row of the first table is one edge of the diagram in section 6, from one st
 | Lane worktree removed outside teardown | Prepared, Paused, Running or Runaway | Leftover | A manual deletion, or another tool's removal | Anyone | Whatever can refuse the removal refuses it (I3). When nothing refuses it, the lane is a Leftover and the next list shows it (I10) | The removal does not happen, and the lane stays in its state |
 | Teardown by name | Leftover | Absent | Someone finds the Leftover in the list | Same as Teardown | The checks of Teardown, against whatever of the lane is left | Same as Teardown. Nothing else ends a Leftover |
 
-Three steps that the earlier table listed are not edges, because none changes the lane's state.
+Three steps are not edges, because none changes the lane's state.
 
 **Finish** is a predicate, not a transition (section 6). Whoever the finish rule names makes it true, and the lane tool reads it live whenever a check needs it.
 
