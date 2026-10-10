@@ -284,6 +284,7 @@ class Project:
         return f"{seat['label']} ({seat['kind']}) since {seat['since']}, {'alive' if alive else 'STALE'}: {how}"
 
     def take_seat(self, name, seat, actor):
+        """Returns True when the actor was not already sitting in the seat."""
         with self.record(name) as rec:
             cur = rec.setdefault("seats", {}).get(seat)
             if cur and not same_actor(cur, actor):
@@ -291,12 +292,14 @@ class Project:
                 if alive:
                     raise Refuse([f"the {seat} seat of {name} is taken by {self.fmt_seat(cur)}",
                                   "a taken seat stays with whoever sits in it; make the change in another lane (section 7.1)"])
-            if cur and same_actor(cur, actor):
+            fresh = not (cur and same_actor(cur, actor))
+            if not fresh:
                 actor["since"] = cur["since"]
             rec["seats"][seat] = actor
             rec["idle_since"] = None
         if actor["kind"] == "session":
             self.ledger_add(actor["session_id"], name)
+        return fresh
 
     def release_seat(self, name, seat, actor=None):
         with self.record(name) as rec:
@@ -580,6 +583,16 @@ class Project:
         lines.append(f"  next: {next_step}")
         return "\n".join(lines)
 
+    def reach_warning(self, info, actor=None):
+        """The section 7.1 warning when the lane runs under another runner or under none, else None."""
+        if not info["procs"]:
+            return None
+        if info["runner_alive"]:
+            if actor and same_actor(info["runner"], actor):
+                return None
+            return self.warning(info, "start runtime and pause will refuse you: only its runner pauses it, and nobody takes over a runtime")
+        return self.warning(info, f"start runtime will refuse until someone stops the runtime (lane stop {info['name']})")
+
     def start(self, name, actor):
         self.require_wt(name)
         k = self.cfg["lane"]
@@ -674,6 +687,7 @@ class Project:
             raise Refuse(f"{name} has no runtime up, so it is not Runaway")
         if info["runner_alive"]:
             raise Refuse(f"{name} is run by {self.fmt_seat(info['runner'])}; it is Running, not Runaway. Only its runner pauses it")
+        say(self.reach_warning(info))
         self.kill_procs(info["procs"])
         with self.record(name) as rec:
             rec.get("seats", {}).pop("runner", None)
@@ -747,6 +761,8 @@ class Project:
     def teardown(self, name, discard=False, unfinished=False):
         os.chdir(self.main)
         block, lifted, info = self.teardown_checks(name, discard, unfinished)
+        if w := self.reach_warning(info):
+            say(w)
         if block:
             raise Refuse([f"teardown of {name} refused, nothing touched:"] + [f"  - {b}" for b in block])
         for l in lifted:
@@ -887,11 +903,16 @@ def main(argv=None):
                 raise Refuse("name a lane, or use --all")
         elif a.cmd == "stop":
             P.stop(a.name)
-        elif a.cmd == "write":
-            P.require_wt(a.name)
-            P.take_seat(a.name, "writer", actor_from_env(a.kind, a.label)); say(f"writer seat of {a.name} taken")
-        elif a.cmd == "release":
-            P.release_seat(a.name, a.seat, actor_from_env(a.kind, a.label)); say(f"{a.seat} seat of {a.name} emptied")
+        elif a.cmd in ("write", "release"):
+            actor = actor_from_env(a.kind, a.label)
+            if a.cmd == "write":
+                P.require_wt(a.name)
+            if w := P.reach_warning(P.inspect(a.name, ps_table(), host=False), actor):
+                say(w)
+            if a.cmd == "write":
+                P.take_seat(a.name, "writer", actor); say(f"writer seat of {a.name} taken")
+            else:
+                P.release_seat(a.name, a.seat, actor); say(f"{a.seat} seat of {a.name} emptied")
         elif a.cmd == "seats":
             cmd_seats(P, a)
         elif a.cmd == "list":

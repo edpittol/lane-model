@@ -153,7 +153,7 @@ class Runtime(Base):
         self.assertEqual(self.state("alpha-one"), "Runaway")
         self.assertIn("lane stop alpha-one", self.ok("list").stdout)
         self.assertIn("Runaway", self.refused("start", "alpha-one"))
-        self.ok("stop", "alpha-one")
+        self.assertIn("next:", self.ok("stop", "alpha-one").stderr)
         self.assertEqual(self.state("alpha-one"), "Paused")
         self.ok("start", "alpha-one"); self.ok("pause", "alpha-one")
 
@@ -223,6 +223,15 @@ class Seats(Base):
         self.assertIn("taken by ed", self.refused("write", "alpha-one", "--as", "script", "--label", "bot"))
         self.ok("release", "alpha-one", "--as", "person", "--label", "ed")
 
+    def test_write_and_release_warn_when_another_runner_runs_the_lane(self):
+        self.ok("start", "alpha-one", "--as", "script", "--label", "nightly")
+        err = self.ok("write", "alpha-one", "--as", "person", "--label", "ed").stderr
+        self.assertIn("nightly", err); self.assertIn("will refuse", err)
+        self.assertIn("nightly", self.ok("release", "alpha-one", "--as", "person", "--label", "ed").stderr)
+        self.assertNotIn("next:", self.ok("write", "alpha-one", "--as", "script", "--label", "nightly").stderr)
+        self.ok("release", "alpha-one", "--as", "script", "--label", "nightly")
+        self.ok("pause", "alpha-one", "--as", "script", "--label", "nightly")
+
     def test_only_holder_releases(self):
         self.ok("write", "alpha-one", "--as", "person", "--label", "ed")
         self.assertIn("not by you", self.refused("release", "alpha-one", "--as", "script", "--label", "bot"))
@@ -240,6 +249,14 @@ class Teardown(Base):
         self.assertIn("uncommitted", err); self.assertIn("local commit", err); self.assertIn("finish rule not met", err)
         self.assertTrue(self.wt("alpha-one").is_dir())
         self.assertTrue(any((self.tmp / "data").rglob("hits.db")))
+
+    def test_teardown_of_a_runaway_lane_warns_before_it_destroys(self):
+        self.ok("start", "alpha-one", "--as", "script", "--label", "nightly")
+        dead = self.dead_pid()
+        self.edit_record("alpha-one", lambda r: r["seats"]["runner"].update(pid=dead))
+        self.prs("alpha-one", {"number": 1, "state": "CLOSED", "headRefOid": "x", "baseRefName": "main", "url": "u"})
+        err = self.ok("teardown", "alpha-one").stderr
+        self.assertLess(err.index("next:"), err.index("torn down"))
 
     def test_live_runner_cannot_be_lifted_by_the_humans_word(self):
         self.ok("start", "alpha-one")

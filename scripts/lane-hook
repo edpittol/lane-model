@@ -45,6 +45,20 @@ def session_actor(sid):
             "pid_start": found[1] if found else None, "since": lane.now(), "heartbeat": lane.now()}
 
 
+def warn_writer(P, names, me):
+    """Write reaches a lane (section 7.1): tell the session when one of the lanes it just sat in runs under someone else."""
+    if not names:
+        return
+    table = lane.ps_table()
+    lines = [w for n in sorted(names) if (w := P.reach_warning(P.inspect(n, table, host=False), me))]
+    if lines:
+        out({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "\n".join(lines)}})
+
+
+# CwdChanged cannot add context, so its prep result waits here for the session's next hook that can.
+def note_file(P, sid): return P.common / "lane-notes" / sid
+
+
 def under(path, root):
     try:
         return Path(path).relative_to(root).parts
@@ -138,10 +152,13 @@ def pre_tool_use():
             return
         wparts = under(real(path), P.wtroot)
         if wparts:
+            me = session_actor(data["session_id"])
             try:
-                P.take_seat(wparts[0], "writer", session_actor(data["session_id"]))
+                fresh = P.take_seat(wparts[0], "writer", me)
             except lane.Refuse as e:
                 deny("\n".join(e.reasons))
+            if fresh:
+                warn_writer(P, [wparts[0]], me)
             return
         deny("The main worktree is not a workspace (I8): make this change in a lane. `scripts/lane create <name>` and work in the worktree it prints.")
     if tool == "Bash":
@@ -156,10 +173,11 @@ def pre_tool_use():
             if shape:
                 me = session_actor(data["session_id"])
                 try:
-                    for name in sorted({here[0]} | named_lanes(ti.get("command", ""), cwd, P.wtroot)):
-                        P.take_seat(name, "writer", me)
+                    fresh = [name for name in sorted({here[0]} | named_lanes(ti.get("command", ""), cwd, P.wtroot))
+                             if P.take_seat(name, "writer", me)]
                 except lane.Refuse as e:
                     deny(f"This command writes ({shape}) in a lane whose writer seat is taken.\n" + "\n".join(e.reasons))
+                warn_writer(P, fresh, me)
             return
         if shape:
             deny(f"This command writes ({shape}) while the working directory is the main worktree, which is not a workspace (I8). "
@@ -212,8 +230,9 @@ def session_end():
                 P.teardown(n)
         except lane.Refuse as e:
             print(f"lane {n}: left as it is: " + "; ".join(e.reasons), file=sys.stderr)
-    with contextlib.suppress(OSError):
-        P.ledger(sid).unlink()
+    for f in (P.ledger(sid), note_file(P, sid)):
+        with contextlib.suppress(OSError):
+            f.unlink()
 
 
 def worktree_create():
@@ -243,7 +262,12 @@ def cwd_changed():
         P = project()
         parts = under(real(data.get("new_cwd") or "."), P.wtroot)
         if parts:
-            P.prep(parts[0], actor=session_actor(data["session_id"]))
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                outcome, line = P.prep(parts[0], actor=session_actor(data["session_id"]))
+            f = note_file(P, data["session_id"])
+            f.parent.mkdir(exist_ok=True)
+            f.write_text(f"Prep of {parts[0]}: {outcome}: {line}" + (f"\n{buf.getvalue().strip()}" if buf.getvalue().strip() else ""))
     except lane.Refuse:
         pass
 
@@ -268,4 +292,10 @@ elif event == "PostToolUse" and data.get("tool_name") == "EnterWorktree":
             out({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}})
 elif event in ("UserPromptSubmit", "PostToolUse", "Stop"):
     with contextlib.suppress(lane.Refuse, OSError):
-        project().heartbeat(data["session_id"])
+        P = project()
+        P.heartbeat(data["session_id"])
+        f = note_file(P, data["session_id"])
+        if event != "Stop" and f.exists():
+            note = f.read_text()
+            f.unlink()
+            out({"hookSpecificOutput": {"hookEventName": event, "additionalContext": note}})
