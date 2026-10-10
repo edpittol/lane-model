@@ -88,6 +88,18 @@ class BashGuard(Hook):
         self.assertEqual(self.bash("rm -f ../beta-two/app.txt", cwd=self.wt("alpha-one")), "deny")
         self.assertEqual(self.bash("git -C ../beta-two status", cwd=self.wt("alpha-one")), "allow")
 
+    def test_taking_the_writer_seat_of_a_lane_another_runner_runs_warns_once(self):
+        for n in ("alpha-one", "beta-two"):
+            self.ok("create", n); self.ok("start", n, "--as", "script", "--label", "nightly")
+        f = str(self.wt("alpha-one") / "x.txt")
+        d, ctx = self.tool("Edit", cwd=self.wt("alpha-one"), file_path=f)
+        self.assertEqual(d, "context"); self.assertIn("nightly", ctx); self.assertIn("will refuse", ctx)
+        self.assertEqual(self.tool("Edit", cwd=self.wt("alpha-one"), file_path=f), ("allow", ""))
+        d, ctx = self.tool("Bash", cwd=self.wt("beta-two"), command="touch y")
+        self.assertEqual(d, "context"); self.assertIn("beta-two", ctx)
+        for n in ("alpha-one", "beta-two"):
+            self.ok("pause", n, "--as", "script", "--label", "nightly")
+
     def test_the_named_holes_really_are_holes(self):
         for cmd in ("python3 -c \"open('x','w')\"", "bash -c 'echo > x'", "find . -name '*.tmp' -delete"):
             self.assertEqual(self.bash(cmd), "allow", cmd)
@@ -100,6 +112,16 @@ class Lifecycle(Hook):
         p = self.hook("PostToolUse", cwd=self.wt("alpha-one"), tool_name="EnterWorktree", tool_input={"path": str(self.wt("alpha-one"))})
         d, ctx = self.decision(p)
         self.assertIn("Prep of alpha-one: Current", ctx); self.assertIn("nightly", ctx); self.assertIn("will refuse", ctx)
+        self.ok("pause", "alpha-one", "--as", "script", "--label", "nightly")
+
+    def test_a_cd_into_a_running_lane_reaches_the_session_at_its_next_hook(self):
+        self.ok("create", "alpha-one")
+        self.ok("start", "alpha-one", "--as", "script", "--label", "nightly")
+        p = self.hook("CwdChanged", old_cwd=str(self.main), new_cwd=str(self.wt("alpha-one")))
+        self.assertEqual(self.decision(p), ("allow", ""))
+        d, ctx = self.decision(self.hook("PostToolUse", cwd=self.wt("alpha-one"), tool_name="Bash", tool_input={"command": "cd x"}))
+        self.assertIn("Prep of alpha-one: Current", ctx); self.assertIn("nightly", ctx)
+        self.assertEqual(self.decision(self.hook("UserPromptSubmit", prompt="hi")), ("allow", ""))
         self.ok("pause", "alpha-one", "--as", "script", "--label", "nightly")
 
     def test_exit_worktree_remove_is_refused_keep_is_allowed(self):
