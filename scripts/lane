@@ -469,7 +469,7 @@ class Project:
                 notes.append((f"finish rule unknown: {e}", "restore access to the Git host"))
         return info
 
-    # ----- sync with base (section 12.4 of the parked parts)
+    # ----- sync with base
     def sync(self, name, flatten=False, actor=None):
         wt = self.wt(name)
         ad = self.admin_dir(name)
@@ -521,7 +521,7 @@ class Project:
             return "Merged", f"merged {base}{' and ' + rb if remote_ahead else ''} into {name}; the next push is a plain push"
         merges = g("rev-list", "--merges", f"{ob}..HEAD").stdout.split()
         if merges and not flatten:
-            return "Held", f"{name} has merge commits and a replay would flatten them; land by another method, or run lane prep {name} --flatten on your word (12.6)"
+            return "Held", f"{name} has merge commits and a replay would flatten them; land by another method, or run lane prep {name} --flatten on your word"
         if remote_ahead and g("rebase", rb).returncode:
             return conflict("replay", rb)
         if g("rebase", ob).returncode:
