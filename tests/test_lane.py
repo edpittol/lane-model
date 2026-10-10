@@ -93,6 +93,25 @@ class Create(Base):
         self.ok("create", "alpha-one")
         self.assertIn("not unique", self.refused("create", "alpha-one"))
 
+    def test_name_left_on_the_git_host_is_not_reused(self):
+        self.prs("old-merged", {"number": 4, "state": "MERGED", "headRefOid": "0" * 40, "baseRefName": "main", "url": ""})
+        err = self.refused("create", "old-merged")
+        self.assertIn("pull request #4 (merged)", err)
+        self.assertFalse(self.wt("old-merged").exists())
+        sh("git", "push", "-q", "origin", "main:refs/heads/old-closed", cwd=self.main)
+        self.prs("old-closed", {"number": 2, "state": "CLOSED", "headRefOid": "0" * 40, "baseRefName": "main", "url": ""})
+        err = self.refused("create", "old-closed")
+        self.assertIn("pull request #2 (closed)", err)
+        self.assertIn("a branch on origin", err)
+        sh("git", "push", "-q", "origin", "main:refs/heads/old-branch", cwd=self.main)
+        self.assertIn("a branch on origin", self.refused("create", "old-branch"))
+        self.assertFalse(self.git("branch", "--list", "old-*"))
+
+    def test_uniqueness_is_never_guessed_when_origin_is_unreachable(self):
+        sh("git", "remote", "set-url", "origin", str(self.tmp / "gone.git"), cwd=self.main)
+        self.assertIn("uniqueness is never guessed", self.refused("create", "alpha-one"))
+        self.assertFalse(self.wt("alpha-one").exists())
+
     def test_base_is_never_guessed_when_host_is_down(self):
         (self.gh / "DOWN").write_text("")
         self.assertIn("Git host could not be asked", self.refused("create", "alpha-one"))
@@ -147,6 +166,16 @@ class Runtime(Base):
         self.assertIn("only its runner pauses", self.refused("pause", "alpha-one", "--as", "person", "--label", "bo"))
         self.ok("pause", "alpha-one", "--as", "person", "--label", "ed")
         self.assertEqual(self.state("alpha-one"), "Paused")
+
+    def test_runner_restarts_a_runtime_that_died(self):
+        self.ok("start", "alpha-one", "--as", "person", "--label", "ed")
+        self.kill_runtimes()
+        sh("sh", "-c", "for i in $(seq 50); do pgrep -f -- '--lane-id lane-model-' >/dev/null || exit 0; sleep 0.1; done; exit 1")
+        self.assertIn("runner seat taken but the runtime is down", self.ok("list").stdout)
+        self.assertIn("running on", self.ok("start", "alpha-one", "--as", "person", "--label", "ed").stderr)
+        self.assertEqual(self.state("alpha-one"), "Running")
+        self.assertIn("run by ed", self.refused("start", "alpha-one", "--as", "person", "--label", "bo"))
+        self.ok("pause", "alpha-one", "--as", "person", "--label", "ed")
 
     def test_pause_all_pauses_only_my_lanes(self):
         self.ok("create", "beta-two")
