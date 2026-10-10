@@ -610,7 +610,7 @@ class Project:
         cur = info["runner"]
         if cur and info["runner_alive"] and not same_actor(cur, actor):
             raise Refuse([f"{name} is run by {self.fmt_seat(cur)}", self.warning(info, "nobody takes over a runtime; start a new lane")])
-        if cur and info["runner_alive"]:
+        if cur and info["runner_alive"] and info["procs"]:
             say(f"{name} is already running for you")
             return
         wt = self.wt(name)

@@ -167,6 +167,16 @@ class Runtime(Base):
         self.ok("pause", "alpha-one", "--as", "person", "--label", "ed")
         self.assertEqual(self.state("alpha-one"), "Paused")
 
+    def test_runner_restarts_a_runtime_that_died(self):
+        self.ok("start", "alpha-one", "--as", "person", "--label", "ed")
+        self.kill_runtimes()
+        sh("sh", "-c", "for i in $(seq 50); do pgrep -f -- '--lane-id lane-model-' >/dev/null || exit 0; sleep 0.1; done; exit 1")
+        self.assertIn("runner seat taken but the runtime is down", self.ok("list").stdout)
+        self.assertIn("running on", self.ok("start", "alpha-one", "--as", "person", "--label", "ed").stderr)
+        self.assertEqual(self.state("alpha-one"), "Running")
+        self.assertIn("run by ed", self.refused("start", "alpha-one", "--as", "person", "--label", "bo"))
+        self.ok("pause", "alpha-one", "--as", "person", "--label", "ed")
+
     def test_pause_all_pauses_only_my_lanes(self):
         self.ok("create", "beta-two")
         self.ok("start", "alpha-one"); self.ok("start", "beta-two", "--as", "script", "--label", "other")
