@@ -84,7 +84,7 @@ class Create(Base):
         self.ok("create", "alpha-one")
         self.assertEqual(self.state("alpha-one"), "Prepared")
         self.assertEqual(self.git("rev-parse", "alpha-one"), self.git("rev-parse", "origin/main"))
-        self.assertEqual(self.git("config", "lane.alpha-one.class"), "pull-request")
+        self.assertTrue(self.git("config", "lane.alpha-one.created"))
 
     def test_bad_and_duplicate_names_refused(self):
         for bad in ("ab", "Bad-Name", "a--b", "trail-", "x" * 41, "a/b"):
@@ -117,8 +117,8 @@ class Create(Base):
         self.assertIn("Git host could not be asked", self.refused("create", "alpha-one"))
         self.assertFalse(self.wt("alpha-one").exists())
 
-    def test_class_file_unreadable_means_nothing_runs(self):
-        (self.main / "lanes.toml").write_text("[class.x]\nmarker='x'\n")
+    def test_lane_file_unreadable_means_nothing_runs(self):
+        (self.main / "lanes.toml").write_text("[lane]\nruntime='always'\n")
         self.assertIn("cannot be used", self.refused("create", "alpha-one"))
 
 
@@ -255,7 +255,7 @@ class Teardown(Base):
         self.assertFalse(self.wt("alpha-one").exists())
         self.assertFalse(any((self.tmp / "data").rglob("*")))
         self.assertEqual(self.git("branch", "--list", "alpha-one"), "")
-        self.assertEqual(sh("git", "config", "--get", "lane.alpha-one.class", cwd=self.main, check=False).returncode, 1)
+        self.assertEqual(sh("git", "config", "--get", "lane.alpha-one.created", cwd=self.main, check=False).returncode, 1)
         self.assertEqual(self.listing(), [])
 
     def test_squash_landing_uses_merged_head_when_branch_is_deleted(self):
@@ -319,15 +319,6 @@ class Leftover(Base):
         self.prs("alpha-one", {"number": 3, "state": "CLOSED", "headRefOid": "x", "baseRefName": "main"})
         self.ok("teardown", "alpha-one")
         self.assertEqual(subprocess.run(["pgrep", "-f", "--", "--lane-id lane-model-.*-lane-alpha-one"], capture_output=True).returncode, 1)
-
-    def test_unreadable_class_refuses_removal(self):
-        (self.wt("x") .parent).mkdir(parents=True, exist_ok=True)
-        self.ok("create", "alpha-one")
-        self.git("worktree", "add", "-q", "-b", "Weird_Name", str(self.main / ".claude/worktrees/Weird_Name"), "origin/main")
-        out = self.ok("list").stdout
-        self.assertIn("matches no declared class", out)
-        self.assertIn("matches no declared class", self.refused("teardown", "Weird_Name"))
-        self.refused("prep", "Weird_Name")
 
 
 class Sync(Base):

@@ -1,11 +1,11 @@
-# The class file (section 3 of the model). Read by scripts/lane from the main worktree.
+# The lane file (section 3 of the model). Read by scripts/lane from the main worktree.
 # The tool refuses to run when this file cannot be read or declares a value it does not implement (I9).
 
 [project]
 slug = "lane-model"
 
 [naming]
-# Lowercase words and digits joined by single dashes. No "/", so no name can be mistaken for a marker.
+# Lowercase words and digits joined by single dashes.
 pattern = "[a-z0-9]+(-[a-z0-9]+)*"
 min_length = 3
 max_length = 40
@@ -27,9 +27,7 @@ dependencies = ["python3"]
 port_base = 3100
 port_span = 900
 
-[class.pull-request]
-default = true
-marker = ""
+[lane]
 runtime = "on-demand"
 runners = ["person", "script", "session"]
 safe_copy = "remote-or-merged-pr-head"
