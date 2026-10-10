@@ -162,7 +162,7 @@ Every run ends in exactly one outcome, reported in one line. Held changes nothin
 
 | Transition | What Git adds |
 |---|---|
-| Create | The lane's branch starts from the remote base, not from the main worktree's local state |
+| Create | The lane's branch starts from the remote base, not from the main worktree's local state. A check: the name has no branch on the remote and heads no pull request in any state, since teardown leaves both (section 12.1) and a lane created under the name again would inherit their finish rule and their commits. When it fails, or when the Git host cannot be asked: refuse (I6, I9) |
 | Prep | A check: no Git operation is in progress (merge, rebase, cherry-pick, revert). When it fails: stop, name the operation to finish or abort |
 | Sync with base | A new transition, part of prep, owned by the lane tool (section 12.4) |
 | Open pull request | A new transition, in a class that requires a pull request. Trigger: work finished. Checks: branch pushed; no pull request open for it yet |
@@ -327,3 +327,4 @@ V3 started on 2026-10-06 as a copy of V2 as finished that day. Each change to V3
 | The warning names the step that will refuse next | Section 7.1 | Decided 2026-10-08 (Q19) |
 | Bettrbyus landing cell: squash and merge commit, so catch-up by merge | Appendix A | Decided 2026-10-08 (Q20) |
 | A person is never gone: they leave a seat only by Pause or Writer ends, whatever they act from. Only a script ends with its process. Pausing stays the runner's own responsibility | Section 1, Seat; section 7, Pause | Decided 2026-10-09 |
+| Under Git, a lane name is unique on the Git host too: Create refuses a name that has a remote branch or heads a pull request in any state, since teardown leaves both | Parked 12.5 | Decided 2026-10-09 |

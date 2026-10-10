@@ -537,12 +537,20 @@ class Project:
         if self.wt(name).exists(): clash.append("a directory")
         if self.data(name).exists(): clash.append("lane data")
         if self.git("config", "--get", f"lane.{name}.class").returncode == 0: clash.append("a roster entry")
-        if clash:
-            raise Refuse(f"{name} is not unique: it already has {', '.join(clash)}. Names are unique and never reused while anything of the lane remains")
         try:
             base = self.repo_facts()["defaultBranchRef"]["name"]
+            prs = self.prs(name)
         except HostError as e:
-            raise Refuse(f"{e}; the base is never guessed (I7, I9)")
+            raise Refuse(f"{e}; the base and the name's uniqueness are never guessed (I6, I7, I9)")
+        # Teardown keeps the remote branch and the pull request (12.1), and both are found by the name, so a lane
+        # created under that name again would inherit them: their finish rule, their commits.
+        clash += [f"pull request #{p['number']} ({p['state'].lower()})" for p in prs]
+        ls = self.git("ls-remote", "--heads", "origin", f"refs/heads/{name}")
+        if ls.returncode:
+            raise Refuse(f"cannot ask origin for a branch named {name}: {ls.stderr.strip()}; uniqueness is never guessed (I6, I9)")
+        if ls.stdout.strip(): clash.append("a branch on origin")
+        if clash:
+            raise Refuse(f"{name} is not unique: it already has {', '.join(clash)}. Names are unique and never reused while anything of the lane remains, on the Git host included. Choose another name")
         f = self.git("fetch", "origin", base)
         if f.returncode:
             raise Refuse(f"cannot fetch origin/{base}: {f.stderr.strip()}")
