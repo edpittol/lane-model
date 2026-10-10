@@ -456,7 +456,12 @@ class Project:
             for seat in SEATS:
                 s = info[seat]
                 if s and not self.seat_alive(s)[0]:
-                    fix = f"lane stop {name}" if seat == "runner" else f"the next writer replaces it, or lane release {name} --seat writer"
+                    if seat == "writer":
+                        fix = f"the next writer replaces it (lane write {name})"
+                    elif info["procs"]:
+                        fix = f"lane stop {name}"
+                    else:
+                        fix = f"the next runner replaces it (lane start {name})"
                     notes.append((f"stale {seat} seat: {self.fmt_seat(s)}", fix))
             if not rec:
                 notes.append(("no seats recorded: the record is missing", "the list cannot tell runners from strangers here; lane stop clears a runtime"))
