@@ -2,7 +2,7 @@
 
 An implementation of the lane model (`docs/model/`) with Git, GitHub and Claude Code. A lane is one task with its own worktree, runtime and data. The tool keeps lanes apart, keeps runtimes off when nobody needs them, and refuses to lose work.
 
-The model is in `docs/model/`: V3 is the interface (`2026-10-06-lane-model-v3.md`), its parked parts hold the Git and harness integrations and the change log. How this project binds the model is in `docs/binding.md`.
+The model is in `docs/model/`: V3 is the interface (`2026-10-06-lane-model-v3.md`), its parked parts hold the Git and harness integrations and the change log.
 
 ## What is here
 
@@ -43,4 +43,6 @@ python3 -m unittest discover tests
 
 ## Adopt in another project
 
-Copy `scripts/lane`, `scripts/lane-hook` and `lanes.toml`, edit the class file (slug, runtime command, naming rule), add the hooks to the project's `.claude/settings.json`, and write the project's binding as `docs/binding.md` does. The runtime command must carry `{lane_id}`.
+The lane tool here is one implementation of the model, not the model itself. Each project can have its own lane tool and its own settings, as long as it keeps the model in `docs/model/`.
+
+To start from this one, copy `scripts/lane`, `scripts/lane-hook` and `lanes.toml`, edit the class file (slug, runtime command, naming rule), and add the hooks to the project's `.claude/settings.json`. The runtime command must carry `{lane_id}`.
