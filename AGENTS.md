@@ -1,6 +1,6 @@
 # Working in this project
 
-This project implements the lane model (`docs/model/`). It also uses it: the main worktree is read-only, and every change, including a change to the lane tool, is made in a lane and ships through a pull request.
+This project implements the lane model (`LANE-MODEL.md`). It also uses it: the main worktree is read-only, and every change, including a change to the lane tool, is made in a lane and ships through a pull request.
 
 ## The loop
 
