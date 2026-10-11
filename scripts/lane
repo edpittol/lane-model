@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The lane tool of the lane model (docs/model). Python 3.11+, standard library only.
+"""The lane tool of the lane model (LANE-MODEL.md). Python 3.11+, standard library only.
 
 Seats and the starting point live in the lane worktree's Git directory (lane.json).
 A roster entry in the Git config (lane.<name>.*) lets a branch be traced to its lane
@@ -850,7 +850,7 @@ def cmd_seats(P, a):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="lane", description="The lane tool (see docs/model).")
+    ap = argparse.ArgumentParser(prog="lane", description="The lane tool (see LANE-MODEL.md).")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def add(name, help, *args):
