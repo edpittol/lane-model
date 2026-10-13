@@ -1,6 +1,6 @@
 # The lane model
 
-This is V1, published 2026-10-10. It is meant to become the source of truth for lanes in every project that uses them. It says what a lane is and what must always hold. The model depends on no version control system and no agent harness. It describes the whole flow with only directories, a lane tool, and the people and scripts that use it. The model is an interface. It defines what every project must decide about its lanes (section 3), and decides none of it. Most projects use it with Git, a Git host and an agent harness, and each of them plugs in as an integration. Each project's workflow docs and lane tooling implement this model, and the project checks them against the model, never the other way round.
+This is V1.1, published 2026-10-13. It is meant to become the source of truth for lanes in every project that uses them. It says what a lane is and what must always hold. The model depends on no version control system and no agent harness. It describes the whole flow with only directories, a lane tool, and the people and scripts that use it. The model is an interface. It defines what every project must decide about its lanes (section 3), and decides none of it. Most projects use it with Git, a Git host and an agent harness, and each of them plugs in as an integration. Each project's workflow docs and lane tooling implement this model, and the project checks them against the model, never the other way round.
 
 ## Why lanes exist
 

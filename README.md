@@ -12,7 +12,7 @@ How this implementation is built, hook by hook, is in `IMPLEMENTATION.md`.
 
 | Path | What |
 |---|---|
-| `LANE-MODEL.md` | The lane model, V1. The interface every implementation is checked against |
+| `LANE-MODEL.md` | The lane model, V1.1. The interface every implementation is checked against |
 | `IMPLEMENTATION.md` | How this implementation is built: hooks, seats and the lane tool |
 | `ADOPTING.md` | Notes for an implementation in a project with more than this one has: a runtime with dependencies, a landing step, lanes that predate the tool |
 | `scripts/lane` | The lane tool. Python 3.11+, standard library only |
