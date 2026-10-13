@@ -104,22 +104,7 @@ The model asks that every anomaly names its fix (I10) and that every refusal say
 
 Test the wording. A test that a command refuses is half a test. The other half checks that the refusal names the command the reader runs next.
 
-## 10. A land binding
-
-Landing is outside the model, and every project with pull requests has a landing step. The port's landing command had the shape below. It is generic enough to be configuration, with each gate as a row in the lane file that gives its name, its command, the paths that trigger it, and whether it needs the lane running.
-
-1. Prep: the section 7.1 warning, then the catch-up. Refuse when it is held.
-2. Refuse early what no gate can fix: uncommitted or untracked files, nothing to land, a lane stacked on an unmerged pull request, the host's CLI missing.
-3. Read the lease, the remote branch as seen now, before the gates run.
-4. The gates, each stopping the landing before any push. A gate that needs the running lane checks the runner rule of section 8 first.
-5. When the base moved while the gates ran: catch up and run them again, up to a small number of times, and refuse when the fetch itself fails after the gates. Nothing lands on a stale view of the base.
-6. Push with `--force-with-lease=<name>:<lease>`.
-7. Create or edit the pull request. Refuse when the host prints no URL.
-8. Merge, squashed, matched to the pushed head, so a push by someone else in between fails the merge instead of landing unseen.
-9. Keep the merged head under a ref of its own outside `origin/` (`refs/remotes/merged/<name>`), so the safe-copy check can prove the landed work after the host deletes the branch, and a stale `origin/<name>` never counts as a copy.
-10. Pause by the seats, in this order: a start under way is left alone; nothing running releases only the caller's own runner seat; the caller's own runtime is paused; a Runaway runtime is stopped; another live runner's runtime is left running, with a note.
-
-## 11. Tests
+## 10. Tests
 
 - A fake for every program the tool calls: the host's CLI, `git` for the fetches and diffs that must fail, the dependency's CLI, the container engine, `lsof`. Each fake keeps a call log the test reads back. A failure marker, a file in the fake's directory, makes the fake fail on a path that must refuse. A hook in the fake that fails one gate by name tests the landing loop.
 - A port span per test run, so suites run in parallel without taking each other's ports.
@@ -128,12 +113,12 @@ Landing is outside the model, and every project with pull requests has a landing
 - Feed each hook event the JSON the harness sends and read the answer. Log the real events once (the reference hook's `LANE_HOOK_LOG`) and copy their shapes into the tests.
 - Tests the reviews found missing, in the order they were found: seat identity across a clear and a resume; release on a refused seat take; teardown with the dependency down; adoption; each item of the hold list; each lexer corner; the wording of each refusal; the lexer's running time.
 
-## 12. The documents
+## 11. The documents
 
 The agent's workflow document follows the model's steps, with the project's commands filled in. Its sections are a lane from a brief (create, what prep holds on, changes that stay Prepared, when to start, how to address the lane, the seats); changes to the agent's own files; rounds of work (commit, push, report, how a runtime stops); the work finished (approved, done for now, teardown with its refusals); the project's own rules; and the I8 list last. The binding document holds the table of section 1, the catch-up, the harness's events, the commands, the states, the ports, the teardown refusals and the landing gates. A one-paragraph decision record says why the model was adopted and what the trade-off was.
 
 Keep each long list (what the guard cannot see, what teardown refuses) in one file and point at it from the others. The port carried the I8 list in two places, and the two copies diverged within a day.
 
-## 13. Running the port
+## 12. Running the port
 
 The port ran in stages, each with its own review: the model's core (records, seats, states, create, prep, teardown, list, housekeeping); the runtime binding; the landing command; the hook; a sweep of every document and comment that named the old tool; the workflow documents; then the small fixes the reviews left. Each stage was implemented, then a stronger model reviewed the diff against the model file with a written brief, then the findings were fixed. Review and fix repeated until a review found nothing, with no cap on rounds. Before landing, the probes of section 2 ran on the clone. The reviews caught what the tests did not: a rule lost when a replaced hook was deleted, an ordering that made a Leftover untraceable, and the messages of section 9. A review brief holds the model file, the stage's scope, the ordering rules, and the instruction to name the rule each finding breaks.

@@ -54,4 +54,4 @@ The lane tool here is one implementation of the model, not the model itself. Eac
 
 To start from this one, copy `scripts/lane`, `scripts/lane-hook` and `lanes.toml`, edit the lane file (slug, runtime command, naming rule), and add the hooks to the project's `.claude/settings.json`. The runtime command must carry `{lane_id}`.
 
-`ADOPTING.md` has what the first port into a larger project learned: the binding before the code, the bootstrap of the first lane, sessions that change id, a hook that fails closed, catch-up holds, lanes that predate the tool, runtimes with dependencies, a landing step, and the tests and documents that go with them.
+`ADOPTING.md` has what the first port into a larger project learned: the binding before the code, the bootstrap of the first lane, sessions that change id, a hook that fails closed, catch-up holds, lanes that predate the tool, runtimes with dependencies, and the tests and documents that go with them.
