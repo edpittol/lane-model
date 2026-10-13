@@ -1,13 +1,14 @@
 # Working in this project
 
-This project implements the lane model (`LANE-MODEL.md`). It also uses it: the main worktree is read-only, and every change, including a change to the lane tool, is made in a lane and ships through a pull request.
+This project implements the lane model (`LANE-MODEL.md`). It also uses it: the main worktree is read-only, and every change, including a change to the lane tool, is made in a lane and lands on `main` by a merge and a push. This repository takes no pull requests: never open one.
 
 ## The loop
 
 1. `scripts/lane create <name>` makes the lane from a human brief. The name is two to four lowercase words joined by dashes, 3 to 40 characters. The command prints the worktree path.
 2. Enter the lane with `EnterWorktree` (name or path). Work only there.
-3. Commit and push the lane branch. Open the pull request once, when the work is finished.
-4. The human merges or closes it. Then `scripts/lane teardown <name>` removes the lane.
+3. Commit and push the lane branch.
+4. When the work is finished, land it from the lane: `scripts/lane prep <name>` catches the lane up with `origin/main`, then `git push origin <name>:main`. A rejected push means `main` moved: prep again and retry. Never force the push.
+5. `scripts/lane teardown <name>` removes the lane. The tool's finish rule still asks for a closed or merged pull request, so for a lane landed this way teardown refuses until the human gives `--unfinished` for that lane.
 
 ## Commands
 
@@ -27,7 +28,7 @@ This project implements the lane model (`LANE-MODEL.md`). It also uses it: the m
 ## Rules for the agent
 
 - A refusal stands. A taken seat stays with whoever sits in it: make the change in another lane. Never take over a runtime, never edit around a refusal.
-- Start a runtime only when you need the running application, and pause it when the pull request is open. Session end pauses what you still run.
+- Start a runtime only when you need the running application, and pause it when the work is on `main`. Session end pauses what you still run.
 - `teardown --discard` and `teardown --unfinished` are the human's word, one lane at a time. Never pass them unprompted. `--unfinished` does not discard work, and `--discard` does not skip the finish rule.
 - A subagent acts as this session. It shares your seats and your lane. Do not create worktrees for subagents: subagent worktree isolation is refused.
 - Do not run `git worktree remove` or `ExitWorktree remove` on a lane. Use `ExitWorktree keep`.
