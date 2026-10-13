@@ -14,6 +14,7 @@ How this implementation is built, hook by hook, is in `IMPLEMENTATION.md`.
 |---|---|
 | `LANE-MODEL.md` | The lane model, V1. The interface every implementation is checked against |
 | `IMPLEMENTATION.md` | How this implementation is built: hooks, seats and the lane tool |
+| `ADOPTING.md` | Notes for an implementation in a project with more than this one has: a runtime with dependencies, a landing step, lanes that predate the tool |
 | `scripts/lane` | The lane tool. Python 3.11+, standard library only |
 | `scripts/lane-hook` | The one Claude Code hook entry point |
 | `lanes.toml` | The lane file: naming rule, paths, runtime, lane settings |
@@ -52,3 +53,5 @@ python3 -m unittest discover tests
 The lane tool here is one implementation of the model, not the model itself. Each project can have its own lane tool and its own settings, as long as it keeps the model file.
 
 To start from this one, copy `scripts/lane`, `scripts/lane-hook` and `lanes.toml`, edit the lane file (slug, runtime command, naming rule), and add the hooks to the project's `.claude/settings.json`. The runtime command must carry `{lane_id}`.
+
+`ADOPTING.md` has what the first port into a larger project learned: the binding before the code, the bootstrap of the first lane, sessions that change id, a hook that fails closed, catch-up holds, lanes that predate the tool, runtimes with dependencies, a landing step, and the tests and documents that go with them.
