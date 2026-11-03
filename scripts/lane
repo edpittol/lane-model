@@ -154,9 +154,10 @@ def load_config(main: Path) -> dict:
             problems.append(f"[lane]: runtime {v['runtime']!r} unknown")
         if not set(v["runners"]) <= {"person", "script", "session"}:
             problems.append(f"[lane]: runners {v['runners']!r} unknown")
-        for key, only in (("safe_copy", "remote-or-merged-pr-head"), ("finish_rule", "pull-request-merged-or-closed"),
-                          ("pull_request", "required"), ("base", "pull-request-target")):
-            if v[key] != only:
+        for key, allowed in (("safe_copy", {"remote-or-merged-pr-head"}),
+                             ("finish_rule", {"pull-request-merged-or-closed", "branch-merged-into-default"}),
+                             ("pull_request", {"required"}), ("base", {"pull-request-target"})):
+            if v[key] not in allowed:
                 problems.append(f"[lane]: {key} {v[key]!r} is not implemented by this tool")
     if not problems:
         rt = cfg["runtime"]
@@ -355,10 +356,43 @@ class Project:
         return self.gh("repo", "view", "--json",
                        "defaultBranchRef,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed")
 
-    @staticmethod
-    def finish_met(prs):
-        """Finish rule: a pull request exists and none is open (merged or closed)."""
-        return bool(prs) and not any(p["state"] == "OPEN" for p in prs)
+    def finish_met(self, name):
+        """Finish rule, read live. Returns (met, why not). Raises HostError when it cannot be read.
+
+        pull-request-merged-or-closed: a pull request exists and none is open.
+        branch-merged-into-default: the lane's branch on origin has commits past the starting point,
+        and the default branch contains it.
+        """
+        if self.cfg["lane"]["finish_rule"] == "pull-request-merged-or-closed":
+            prs = self.prs(name)
+            if not prs:
+                return False, "no pull request exists"
+            if any(p["state"] == "OPEN" for p in prs):
+                return False, "its pull request is still open"
+            return True, None
+        base = self.repo_facts()["defaultBranchRef"]["name"]
+        ls = self.git("ls-remote", "--heads", "origin", f"refs/heads/{name}")
+        if ls.returncode:
+            raise HostError(f"{HOST_DOWN}: cannot ask origin for {name}: {ls.stderr.strip()}")
+        if not ls.stdout.strip():
+            return False, f"{name} is not on origin"
+        f = self.git("fetch", "origin", base, name)
+        if f.returncode:
+            raise HostError(f"{HOST_DOWN}: cannot fetch origin/{base} and origin/{name}: {f.stderr.strip()}")
+        since = self.own_since(name)
+        if not since:
+            return False, "its starting point is unknown, so its own commits cannot be told"
+        if not self.git("rev-list", f"origin/{name}", "--not", since).stdout.strip():
+            return False, f"origin/{name} has no commits of its own"
+        if self.git("merge-base", "--is-ancestor", f"origin/{name}", f"origin/{base}").returncode:
+            return False, f"origin/{base} does not contain origin/{name}"
+        return True, None
+
+    def own_since(self, name):
+        """The commit after which the lane's commits are its own: the starting point, moved by every
+        fast-forward of a lane with no commits of its own, which would otherwise look landed."""
+        r = self.git("config", "--get", f"lane.{name}.own-since")
+        return r.stdout.strip() or (self.read_record(name) or {}).get("start")
 
     # ----- processes of a lane
     def lane_procs(self, name, table=None):
@@ -414,7 +448,7 @@ class Project:
 
     def inspect(self, name, table, host=True):
         wt = self.wt(name)
-        info = {"name": name, "wt": wt.is_dir(), "notes": [], "finish": "unknown", "prs": None}
+        info = {"name": name, "wt": wt.is_dir(), "notes": [], "finish": "unknown"}
         info["branch"] = self.git("show-ref", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0
         info["data"] = self.data(name).is_dir()
         info["procs"] = self.lane_procs(name, table)
@@ -454,9 +488,7 @@ class Project:
                 notes.append(("no seats recorded: the record is missing", "the list cannot tell runners from strangers here; lane stop clears a runtime"))
         if host:
             try:
-                prs = self.prs(name)
-                info["prs"] = prs
-                info["finish"] = "met" if self.finish_met(prs) else "not met"
+                info["finish"] = "met" if self.finish_met(name)[0] else "not met"
             except HostError as e:
                 notes.append((f"finish rule unknown: {e}", "restore access to the Git host"))
         return info
@@ -495,6 +527,8 @@ class Project:
         orig = g("rev-parse", "HEAD").stdout.strip()
         if anc("HEAD", ob) and not remote_ahead:
             m = g("merge", "--ff-only", ob)
+            if m.returncode == 0 and orig == self.own_since(name):
+                self.git("config", f"lane.{name}.own-since", g("rev-parse", "HEAD").stdout.strip())
             return ("Moved", f"{name} moved to {base}") if m.returncode == 0 else ("Held", f"cannot move to {base}: {m.stderr.strip()}")
         if g("status", "--porcelain").stdout.strip():
             return "Held", f"{name} needs a catch-up with {base} but has uncommitted changes; commit them (a work-in-progress commit is fine)"
@@ -551,6 +585,7 @@ class Project:
         if a.returncode:
             raise Refuse(f"git worktree add failed: {a.stderr.strip()}")
         self.git("config", f"lane.{name}.created", now())
+        self.git("config", f"lane.{name}.own-since", start)
         with self.record(name) as rec:
             rec.update({"name": name, "created": now(), "start": start,
                         "start_base": base, "seats": {}, "idle_since": now()})
@@ -746,9 +781,8 @@ class Project:
             lifted.append("finish rule skipped on the human's word (--unfinished)")
         else:
             try:
-                prs = self.prs(name)
-                if not self.finish_met(prs):
-                    why = "no pull request exists" if not prs else "its pull request is still open"
+                met, why = self.finish_met(name)
+                if not met:
                     block.append(f"finish rule not met: {why} (--unfinished lifts this, on the human's word)")
             except HostError as e:
                 block.append(f"finish rule cannot be checked: {e}; nothing guesses (I9)")

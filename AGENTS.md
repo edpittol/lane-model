@@ -8,7 +8,7 @@ This project implements the lane model (`LANE-MODEL.md`). It also uses it: the m
 2. Enter the lane with `EnterWorktree` (name or path). Work only there.
 3. Commit and push the lane branch.
 4. When the work is finished, land it from the lane: `scripts/lane prep <name>` catches the lane up with `origin/main`, then `git push origin <name>:main`. A rejected push means `main` moved: prep again and retry. Never force the push.
-5. `scripts/lane teardown <name>` removes the lane. The tool's finish rule still asks for a closed or merged pull request, so for a lane landed this way teardown refuses until the human gives `--unfinished` for that lane.
+5. `scripts/lane teardown <name>` removes the lane. The finish rule (`branch-merged-into-default`) is met once `origin/main` contains the lane branch on `origin` and that branch has commits of its own. So push the lane branch as well as `main`.
 
 ## Commands
 

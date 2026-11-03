@@ -35,7 +35,7 @@ The tool keeps almost no records of its own. Everything it can derive, it derive
 | Record | Where | Why there |
 | --- | --- | --- |
 | Seats, starting point, port | `.git/worktrees/<entry>/lane.json`, guarded by `lane.lock` | Git's own admin directory for that worktree. It goes away with the worktree entry |
-| Roster entry | `lane.<name>.created` in `.git/config` | Survives a deleted worktree, so the lane can still be traced and torn down (I6) |
+| Roster entry | `lane.<name>.created` and `lane.<name>.own-since` in `.git/config` | Survives a deleted worktree, so the lane can still be traced and torn down (I6), and its own commits told apart (finish rule) |
 | Session ledger | `.git/lane-sessions/<session id>` | Which lanes a session sat in, so `SessionEnd` knows what to pause |
 | Prep note | `.git/lane-notes/<session id>` | `CwdChanged` cannot add context, so its prep result waits here for the session's next hook that can |
 | Project id | Derived: `<slug>-<first 6 hex chars of sha1(main path)>` | Two clones of the same project never share data or lane ids |
@@ -131,7 +131,7 @@ The model says a project declares its lane settings in a file next to its code. 
 | `[lane] runtime` | Runtime | `on-demand` | `start()` refuses when it is `never` |
 | `[lane] runners` | Runners | person, script, session | `start()` refuses any other kind of runner |
 | `[lane] safe_copy` | Safe copy | `remote-or-merged-pr-head` | Teardown checks commits against `origin` and merged pull request heads |
-| `[lane] finish_rule` | Finish rule | `pull-request-merged-or-closed` | `finish_met()`: a pull request exists and none is open |
+| `[lane] finish_rule` | Finish rule | `branch-merged-into-default` | `finish_met()`: `origin/<name>` has commits past `own_since()` and the default branch on `origin` contains it. The other value, `pull-request-merged-or-closed`, means a pull request exists and none is open |
 | `[runtime] command` | (implementation) | `python3 sample/server.py --lane-id {lane_id} ...` | Must carry `{lane_id}`, or the runtime could not be traced to its lane (I6) |
 | `[seats] heartbeat_minutes` | (implementation) | 30 | A seat with no known pid goes stale after this |
 | `[housekeeping] resting_days` | Housekeeping limit | 7 | Lanes with both seats empty longer than this are reported |
@@ -140,9 +140,10 @@ The tool refuses to run on a value it does not implement (I9). It does not fall 
 
 ```python
 # scripts/lane, load_config()
-for key, only in (("safe_copy", "remote-or-merged-pr-head"), ("finish_rule", "pull-request-merged-or-closed"),
-                  ("pull_request", "required"), ("base", "pull-request-target")):
-    if v[key] != only:
+for key, allowed in (("safe_copy", {"remote-or-merged-pr-head"}),
+                     ("finish_rule", {"pull-request-merged-or-closed", "branch-merged-into-default"}),
+                     ("pull_request", {"required"}), ("base", {"pull-request-target"})):
+    if v[key] not in allowed:
         problems.append(f"[lane]: {key} {v[key]!r} is not implemented by this tool")
 ```
 
@@ -459,7 +460,7 @@ Each check adds its finding to one of two lists. `block` holds refusals. `lifted
 | Uncommitted changes in the worktree | Yes, `--discard` (I1) |
 | Local commits on no remote branch and in no merged pull request head | Yes, `--discard` (I1) |
 | `origin` cannot be fetched, or GitHub cannot be asked, while unsafe commits exist | No. Nothing guesses (I9) |
-| Finish rule not met: no pull request, or one still open | Yes, `--unfinished` (I4) |
+| Finish rule not met: the lane branch is not on `origin`, has no commits of its own, or is not in the default branch (or, under the pull request rule, no pull request, or one still open) | Yes, `--unfinished` (I4) |
 | The worktree or data directory cannot be deleted (permissions) | No. Fix the permissions first |
 
 The safe-copy check is the subtle one. A squash merge leaves the lane's own commits on no branch of `origin`. So for each merged pull request the tool fetches `refs/pull/<n>/head` and accepts commits that are in that head:
@@ -542,7 +543,7 @@ Every invariant of the model is enforced in one or two named places. When you ch
 | I1 Work is never lost silently | Safe-copy check: uncommitted changes, commits on no remote and in no merged PR head | `teardown_checks()` in `scripts/lane` |
 | I2 Every refusal before any destruction | Checks and destruction in separate functions | `teardown_checks()` then `teardown()` |
 | I3 Only teardown removes a lane | Deny `ExitWorktree remove`. `WorktreeRemove` runs teardown. Leftovers stay visible | `pre_tool_use()`, `worktree_remove()` in `scripts/lane-hook` |
-| I4 A lane lives until its finish rule | `finish_met()` against GitHub pull requests | `finish_met()` in `scripts/lane` |
+| I4 A lane lives until its finish rule | `finish_met()` against `origin` (or GitHub pull requests, under the pull request rule) | `finish_met()` in `scripts/lane` |
 | I5 Nothing runs without a reason | Runtime only through `start()`. `SessionEnd` pauses. `stop` only for Runaway | `start()`, `stop()` in `scripts/lane`; `session_end()` in `scripts/lane-hook` |
 | I6 Identity is total and reversible | Ids derived from the name. `--lane-id` on the runtime. Roster in `.git/config`. Name reuse refused | `lane_id()`, `names()`, `create()` |
 | I7 The starting point is explicit | `start` and `start_base` written at create | `create()` |

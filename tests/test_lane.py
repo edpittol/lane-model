@@ -1,5 +1,5 @@
 """Tests of the lane tool against a local bare remote and a fake gh. Run: python3 -m unittest discover tests"""
-import json, os, shutil, subprocess, sys, tempfile, unittest
+import json, os, re, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -14,6 +14,8 @@ def sh(*a, cwd=None, env=None, check=True):
 
 
 class Base(unittest.TestCase):
+    FINISH_RULE = "pull-request-merged-or-closed"
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="lane-test-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -27,7 +29,8 @@ class Base(unittest.TestCase):
             sh("git", "config", k, v, cwd=self.main)
         shutil.copytree(ROOT / "scripts", self.main / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copytree(ROOT / "sample", self.main / "sample", ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copy(ROOT / "lanes.toml", self.main / "lanes.toml")
+        toml = (ROOT / "lanes.toml").read_text()
+        (self.main / "lanes.toml").write_text(re.sub(r'(?m)^finish_rule = ".*"$', f'finish_rule = "{self.FINISH_RULE}"', toml))
         (self.main / ".gitignore").write_text(".claude/worktrees/\n")
         (self.main / "app.txt").write_text("one\n")
         sh("git", "add", "-A", cwd=self.main)
@@ -323,6 +326,48 @@ class Teardown(Base):
         (self.gh / "DOWN").write_text("")
         self.assertIn("nothing guesses", self.refused("teardown", "alpha-one"))
         self.assertTrue(self.wt("alpha-one").is_dir())
+
+
+class BranchFinish(Base):
+    FINISH_RULE = "branch-merged-into-default"
+
+    def setUp(self):
+        super().setUp(); self.ok("create", "alpha-one")
+
+    def finish(self): return next(i["finish"] for i in self.listing() if i["name"] == "alpha-one")
+
+    def test_lane_not_on_origin_is_unfinished(self):
+        self.assertEqual(self.finish(), "not met")
+        self.assertIn("is not on origin", self.refused("teardown", "alpha-one"))
+
+    def test_lane_pushed_but_not_landed_is_unfinished(self):
+        self.commit_in("alpha-one", push=True)
+        self.assertIn("does not contain", self.refused("teardown", "alpha-one"))
+
+    def test_lane_pushed_to_the_default_branch_is_finished(self):
+        self.commit_in("alpha-one", push=True)
+        sh("git", "push", "-q", "origin", "alpha-one:main", cwd=self.wt("alpha-one"))
+        self.assertEqual(self.finish(), "met")
+        self.assertIn("alpha-one: torn down", self.ok("housekeeping").stdout)
+        self.assertEqual(self.listing(), [])
+
+    def test_lane_that_only_caught_up_is_unfinished(self):
+        sh("git", "commit", "-q", "--allow-empty", "-m", "elsewhere", cwd=self.main)
+        sh("git", "push", "-q", "origin", "main", cwd=self.main)
+        self.assertIn("Moved", self.ok("prep", "alpha-one").stdout)
+        sh("git", "push", "-q", "origin", "alpha-one", cwd=self.wt("alpha-one"))
+        self.assertIn("no commits of its own", self.refused("teardown", "alpha-one"))
+        self.commit_in("alpha-one", push=True)
+        sh("git", "push", "-q", "origin", "alpha-one:main", cwd=self.wt("alpha-one"))
+        self.ok("teardown", "alpha-one")
+
+    def test_leftover_reads_its_starting_point_from_the_roster(self):
+        self.commit_in("alpha-one", push=True)
+        sh("git", "push", "-q", "origin", "alpha-one:main", cwd=self.wt("alpha-one"))
+        self.git("worktree", "remove", "--force", str(self.wt("alpha-one")))
+        self.assertEqual(self.state("alpha-one"), "Leftover")
+        self.ok("teardown", "alpha-one")
+        self.assertEqual(self.listing(), [])
 
 
 class Leftover(Base):

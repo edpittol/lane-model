@@ -135,7 +135,7 @@ def pre_tool_use():
     tool, ti = data.get("tool_name", ""), data.get("tool_input", {}) or {}
     if tool == "ExitWorktree":
         if ti.get("action") == "remove":
-            deny("Only teardown removes a lane (I3). Use action keep, then `scripts/lane teardown <name>` once its pull request is merged or closed.")
+            deny("Only teardown removes a lane (I3). Use action keep, then `scripts/lane teardown <name>` once its finish rule is met.")
         return
     try:
         P = project()

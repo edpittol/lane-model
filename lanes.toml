@@ -31,6 +31,6 @@ port_span = 900
 runtime = "on-demand"
 runners = ["person", "script", "session"]
 safe_copy = "remote-or-merged-pr-head"
-finish_rule = "pull-request-merged-or-closed"
+finish_rule = "branch-merged-into-default"
 pull_request = "required"
 base = "pull-request-target"
