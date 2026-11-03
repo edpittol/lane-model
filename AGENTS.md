@@ -27,6 +27,7 @@ This project implements the lane model (`LANE-MODEL.md`). It also uses it: the m
 
 ## Rules for the agent
 
+- Plan a change to the model (`LANE-MODEL.md`) from the model alone. Leave the tool (`scripts/lane`) out of the plan: what it does today neither limits nor shapes the change.
 - A refusal stands. A taken seat stays with whoever sits in it: make the change in another lane. Never take over a runtime, never edit around a refusal.
 - Start a runtime only when you need the running application, and pause it when the work is on `main`. Session end pauses what you still run.
 - `teardown --discard` and `teardown --unfinished` are the human's word, one lane at a time. Never pass them unprompted. `--unfinished` does not discard work, and `--discard` does not skip the finish rule.
