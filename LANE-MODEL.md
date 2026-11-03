@@ -15,7 +15,7 @@ Lanes have two purposes, and every rule below supports one of them.
 ### The environment
 
 - **Project.** A set of files that people develop together and that uses lanes. It has one main worktree, declares its lane settings (section 3) and has its own lane tool.
-- **Lane tool.** The project's own commands that implement the lane operations (create, prep, start, pause, resume, stop a Runaway lane's runtime, take and leave the writer seat, list, teardown), and the registry they keep. The project chooses their names and how to invoke them.
+- **Lane tool.** The project's own commands that implement the lane operations (create from the main worktree or from kept work, prep, start, pause, resume, stop a Runaway lane's runtime, take and leave the writer seat, list, teardown), and the registry they keep. The project chooses their names and how to invoke them.
 - **Script.** Any program that runs lane operations with no person taking part, such as a scheduled job or a wrapper that serves a lane for someone to look at.
 - **Dependencies.** Everything outside the project's files that the lane's runtime needs to start, such as a container engine, a database server or network access.
 - **Integration.** A tool the model does not need but that projects usually use with it, such as a version control system or an agent harness. An integration binds the model's terms to its own objects, and may add terms, lane settings, transitions, checks and actors. It never relaxes an invariant.
@@ -27,11 +27,12 @@ Lanes have two purposes, and every rule below supports one of them.
 - **Main worktree.** The project's one canonical copy of its files, in a directory of its own. Finished work lands there. It hosts the lane tool and its registry, and housekeeping runs from it. Nobody works in it.
 - **Brief.** The human's request for a piece of work, in their own words. Someone creates a lane from a brief and names the lane after it. What a brief contains and how the human gives it is outside the model.
 - **Lane.** One unit of work: one task, one name, one lane worktree, and the runtime and data the task needs. A brief starts a lane and teardown ends it. Teardown waits for the finish rule unless the human says otherwise (I4).
-- **Lane worktree.** The lane's own copy of the project's files. It is a directory that the lane tool creates from the main worktree and names after the lane. Every change of the lane happens there.
-- **Starting point.** The state of the main worktree from which the lane tool created the lane worktree. The lane tool records it, so anyone can tell a lane's own changes apart from what landed in the main worktree afterwards. The implementation chooses how to record it.
+- **Lane worktree.** The lane's own copy of the project's files. It is a directory that the lane tool creates from the main worktree or from kept work, and names after the lane. Every change of the lane happens there.
+- **Starting point.** The state of the main worktree from which the lane tool created the lane worktree. For a lane worktree created from kept work, it is the state of the main worktree the kept work started from. The lane tool records it, so anyone can tell a lane's own changes apart from what landed in the main worktree afterwards. The implementation chooses how to record it.
 - **Change.** Anything in a lane worktree that differs from its starting point.
 - **Landed.** A change is landed when the main worktree holds it. How a change lands, who lands it and after which review is outside the model. The model only reads the result.
-- **Lane name.** Whoever creates the lane chooses the name from the brief, so a person recognizes the task in it. The name is the lane's identity and never changes. The lane tool derives everything else the lane owns from the name (section 5). Names are unique. The project's naming rule (section 3) says which characters a name uses and how long it may be.
+- **Kept work.** What the safe copy (section 3) holds under one name. It may come from a lane, or from before the project used lanes. Kept work is not the lane's. It outlives teardown (section 5). Isolation and the writer seat cover only the lane worktree. Kept work can change from outside the lane model, and catching a lane up with it stays outside the model (I7).
+- **Lane name.** Whoever creates the lane chooses the name from the brief, so a person recognizes the task in it. For Create from the safe copy (section 7), the name is the name of the kept work the brief asks for. The name is the lane's identity and never changes. The lane tool derives everything else the lane owns from the name (section 5). Names are unique. The project's naming rule (section 3) says which characters a name uses and how long it may be. A name stays taken while kept work exists under it, so Create refuses it. Create from the safe copy is the one exception, and it takes the name on purpose. A name is free again once no kept work exists under it. Removing kept work is outside the model.
 - **Runtime.** Everything that runs for the lane: application servers, background workers, local services, stubs, any other process.
 - **Data.** Everything the lane stores outside its lane worktree: databases, object stores, working directories. The lane tool creates it at the lane's first start. Pause keeps it, and only teardown removes it.
 - **Runner.** The person or script that a running lane's runtime belongs to. A person becomes a runner by starting the runtime by hand. The project says which kinds of runner its lanes allow. A runner may run several lanes. A lane has at most one runner, and only a Running lane has one.
@@ -51,7 +52,7 @@ Lanes have two purposes, and every rule below supports one of them.
 |---|---|---|
 | Human | Writes the brief, creates lanes or has them created, may run or write in a lane, says when a lane is finished, authorises discarding work or ignoring a finish rule, decides when housekeeping runs | Skips a teardown check (I2). Discarding work or tearing down an unfinished lane takes the human's explicit word for that lane, never a default |
 | Script | Runs lane operations with the same commands and the same refusals as a person, and is the runner of the runtimes it starts where the project allows it | Asks anyone, or gets past a refusal of the lane tool. What it does after a refusal is its own choice |
-| Lane tool | Creates lane worktrees and records their starting points, records runners and writers, starts and pauses runtimes, lists lanes, Leftovers included, tears lanes down | Guesses when it cannot make a check (I9). Destroys anything before every check has passed (I2) |
+| Lane tool | Creates lane worktrees from the main worktree or from kept work and records their starting points, records runners and writers, starts and pauses runtimes, lists lanes, Leftovers included, tears lanes down | Guesses when it cannot make a check (I9). Destroys anything before every check has passed (I2) |
 
 ## 3. Lane settings
 
@@ -63,7 +64,7 @@ The model is the interface every project implements. A project fills in the sett
 |---|---|
 | Runtime | Never, or on demand, when a runner needs the running application |
 | Runners | Which kinds of runner may run a lane |
-| Safe copy | Where a lane's changes must exist before teardown may remove them |
+| Safe copy | Where a lane's changes must exist, under the lane's name, before teardown may remove them. Every project's safe copy must keep work by name (section 1, Kept work) |
 | Finish rule | What finishes a lane |
 
 ### Rules about the settings
@@ -80,13 +81,13 @@ The invariants of section 4 hold whatever values the project picks. These rules 
 
 These hold in every project, whatever the tooling.
 
-- **I1. Work is never lost silently.** Nothing destroys irreplaceable work unless the work provably exists elsewhere or the human explicitly says to discard it. "Provably" means the safe copy holds it, checked at the moment of removal.
+- **I1. Work is never lost silently.** Nothing destroys irreplaceable work unless the work provably exists elsewhere or the human explicitly says to discard it. "Provably" means the safe copy holds it under the lane's name, checked at the moment of removal.
 - **I2. Every refusal comes before any destruction.** Teardown evaluates all its checks first and then destroys. It never deletes data and then discovers it cannot remove the lane worktree. The human's word skips no check, and teardown still runs them all first.
 - **I3. Only teardown removes a lane.** The lane tool refuses every other removal path that it can refuse. A removal it cannot refuse (a manual deletion, another tool's removal) leaves a Leftover, and the same teardown removes that Leftover with the same checks.
 - **I4. A lane lives until its finish rule is met.** The project declares what finishes its lanes, and the teardown command enforces that rule itself. Nothing enforces a rule that exists only in the docs. Teardown removes a lane whose finish rule is not met only when the human explicitly says so for that lane, and that word does not also discard work (I1).
 - **I5. Nothing runs without a reason.** A runtime starts only when the project allows it and its runner needs it, never by default and never "in case". It has exactly one recorded runner, and it stops when its runner pauses it or ends. A lane whose runtime is down is Paused or Prepared. A runner may run several lanes. When the runner ends, exactly those lanes pause, and nothing the runner does touches a lane another runner runs. A lane whose runtime is up while its runner is gone or was never recorded is Runaway. The list shows it as Runaway, and anyone may stop its runtime through the lane tool (section 7, Stop a Runaway lane's runtime). Nobody takes over a runtime while it runs. Whoever needs the application starts a new lane. A lane whose runtime someone detaches from its runner is Runaway from that moment.
 - **I6. Identity is total and reversible.** Every resource id derives from the lane's name without collisions, and every remaining resource maps back to a lane name.
-- **I7. The starting point is explicit.** The lane tool creates a lane worktree from the main worktree and records the state it started from. Nobody guesses anything about it later. Catching a lane up with changes that landed after it started is outside the model. An integration that adds it names the source of truth it reads, reads it on every run, and never loses a change.
+- **I7. The starting point is explicit.** The lane tool creates a lane worktree from the main worktree or from kept work, and records the state of the main worktree it started from at that transition. Nobody guesses anything about it later. When the lane tool cannot tell where kept work started from, it refuses (I9). Catching a lane up with changes that landed after it started is outside the model. An integration that adds it names the source of truth it reads, reads it on every run, and never loses a change.
 - **I8. The main worktree is not a workspace.** It holds no work in progress. Every change, including changes to the lane tooling itself, happens in a lane. Enforcement covers every way of writing files. Where it is partial, the docs say which paths it does not cover.
 - **I9. When the lane tool cannot make a check, nothing guesses.** A destructive operation refuses and a non-destructive one does nothing. Lane settings the lane tool cannot read are such a case.
 - **I10. Every Leftover, each of its remaining resources and every anomaly of a living lane is visible and names its fix.** Listing lanes shows Runaway lanes, orphans, stale seats, registry entries whose directory is gone and stray files, each with the step that clears it. A running lane shows its runner and since when it has run, or says that no runner is recorded. When the list cannot see something (a dependency is down, no seats are recorded), it says so instead of showing nothing.
@@ -100,12 +101,14 @@ Every resource belongs to exactly one lane. The lane tool finds it from the lane
 
 | Kind | Resources | Rule |
 |---|---|---|
-| Work (irreplaceable) | Changes in the lane worktree that are not in the safe copy | Destroyed only when the safe copy holds them or when the human says to discard them |
+| Work (irreplaceable) | Changes in the lane worktree that the safe copy does not hold under the lane's name | Destroyed only when the safe copy holds them or when the human says to discard them |
 | State (costly to rebuild) | Databases, object stores, loaded or seeded data, assigned network ports, installed packages | Kept while the lane is paused, so resuming needs no rebuild. Only teardown destroys it |
 | Runtime (costly to keep) | Processes: servers, workers, local services, stubs | Runs only while its runner needs it. Pause stops it, which is always safe because a process holds nothing of value |
 | Disposable | Logs, generated configuration, caches, registry entries | Recreated on demand. Teardown removes them |
 
 State is costly to rebuild and runtime is costly to keep. The Paused state keeps the state and stops the runtime.
+
+Kept work (section 1) is not the lane's, even when the lane's changes made it. It outlives teardown, and I13 does not ask teardown to remove it. A torn-down lane whose name the safe copy still keeps work under is Absent, not a Leftover.
 
 Identity rules:
 
@@ -118,6 +121,7 @@ Identity rules:
 ```mermaid
 stateDiagram-v2
   [*] --> Prepared: create and prep
+  [*] --> Prepared: create from the safe copy and prep
   Prepared --> Running: start (the project allows it and a runner needs it)
   Running --> Paused: pause (by the runner, or the runner ended)
   Paused --> Running: resume and prep
@@ -135,13 +139,13 @@ stateDiagram-v2
   Leftover --> [*]: teardown by name
 ```
 
-- **Prepared.** The lane worktree exists, created from the main worktree. The lane has no runtime and no data. This is enough for changes that do not need the running application, and it is the only state of a lane that never needs it.
+- **Prepared.** The lane worktree exists, created from the main worktree or from kept work. The lane has no runtime and no data. This is enough for changes that do not need the running application, and it is the only state of a lane that never needs it.
 - **Running.** The runtime is up, and the data exists since the first start. Exactly one recorded runner, of a kind the project allows, runs the lane until that runner pauses it or ends. A runner may run several Running lanes. A lane whose runtime has no runner is Runaway, not Running. A lane becomes Running only through Start runtime (section 7).
 - **Runaway.** The lane worktree exists and the runtime is up with no live runner. The runner is gone, or nobody recorded one, as when someone starts a runtime outside the lane tool or detaches it from its runner. A Prepared or Paused lane whose runtime starts that way is Runaway too. Runaway is an anomaly of a lane that still lives, so it is not a Leftover. Nobody takes over the runtime while it runs. Someone stops it (section 7, Stop a Runaway lane's runtime), the lane is Paused, and whoever needs the application starts a new lane.
 - **Paused.** The runtime is stopped. The lane keeps its data, port, installed packages and lane worktree. Every lane that has run and is not running is Paused, for example between two stretches of work or while its changes wait to land. Resuming from here takes seconds, not a rebuild. When someone stops a Runaway lane's runtime before the lane's first start through the lane tool, the lane is Paused with no data yet, and the lane tool creates the data at that first start.
 - **Finished is not a state.** It is a property of any living lane: the finish rule is met. The lane tool reads the rule when asked and stores no result, since a rule can change its answer (a closed pull request can reopen). A lane whose rule is met stays in its state. A Running one is paused by its runner as usual, and teardown then removes it. The list shows the rule's result beside the state.
 - **Leftover.** The lane worktree is gone and something of the lane remains: data, registry entries, a runtime still up. A Leftover is always an anomaly. The list must show it, and nothing brings it back. Teardown by name is the only operation that ends it.
-- **Absent.** Nothing of the lane remains.
+- **Absent.** Nothing of the lane remains. Kept work under its name may remain, because kept work is not the lane's and outlives teardown (section 5). It keeps the name taken (section 1, Lane name).
 
 Only a running runtime has a runner, and only active editing has a writer. No transition of the model removes irreplaceable work without a check, and a removal outside teardown that nothing can refuse leaves a Leftover (I3). Outside the two anomalies, Runaway and Leftover, a lane has a runtime only while Running.
 
@@ -151,14 +155,15 @@ Each row of the first table is one edge of the diagram in section 6, from one st
 
 | Transition | From | To | Trigger | Owner | Checks before acting | When a check fails |
 |---|---|---|---|---|---|---|
-| Create | Absent | Prepared | A human brief asks for a lane | The human, or whoever acts on the brief, through the lane tool | The name follows the project's naming rule and is unique. The lane tool creates the lane worktree from the main worktree and records its starting point. Prep follows (below) | Stop and ask |
+| Create | Absent | Prepared | A human brief asks for a lane | The human, or whoever acts on the brief, through the lane tool | The name follows the project's naming rule and is unique. No kept work exists under it (section 1, Lane name). The lane tool creates the lane worktree from the main worktree and records its starting point. Prep follows (below) | Stop and ask |
+| Create from the safe copy | Absent | Prepared | A human brief asks for a lane on kept work | Same as Create | The name follows the project's naming rule. Kept work under a name that breaks it gets no lane. Kept work exists under the name, and the lane tool can read it. No lane, Leftover or registry entry uses the name. The lane tool can tell the starting point, the state of the main worktree the kept work started from. The implementation may let the human name it explicitly. The finish rule is not met. The lane tool creates the lane worktree from the kept work and records its starting point, either way (I7). Prep follows (below) | Stop and ask, as for Create. A starting point the lane tool cannot tell: refuse and never guess (I9). A met finish rule: refuse and point to a new lane, or to reopening the work outside the lane tool |
 | Start runtime | Prepared | Running | The project allows a runtime and a runner needs it, and not before | Lane tool, for the runner | Dependencies are available. The project allows this kind of runner. No other runner runs the lane. This runner takes the runner seat, and replaces a stale one once the lane tool has shown that its runner is gone (I12). On the lane's first start, the lane tool creates its data once these checks pass | Missing dependencies: stop and ask the human to provide them, and never install or start them unasked. Another runner: refuse and show the seats (section 7.1). A Runaway lane: refuse and say so. Someone stops its runtime first (Stop a Runaway lane's runtime), and then the runner starts it |
 | Pause | Running | Paused | The runner asks, or the runner ends cleanly, as when a script exits | Lane tool, for the runner | The runner that pauses the lane is the one that runs it. A runner that ends pauses every lane it runs, and no other lane | Leave it running and say so |
 | Resume | Paused | Running | Someone needs the lane again | Lane tool | Prep (below), then the checks of Start runtime | Same as prep and Start runtime |
 | Runner gone | Running | Runaway | The runner crashes, or someone detaches the runtime from its runner | Nobody on a crash. Whoever detaches the runtime | None, since nothing can refuse it. On a crash the runner seat goes stale. The list shows the lane as Runaway (I5, I10, I12) | None |
 | Runtime started outside the lane tool | None. It enters the flow from outside, as Create does | Runaway | Someone starts the lane's runtime outside the lane tool | Whoever starts it | None, since nobody asks the lane tool. It records no runner, traces the process to the lane (section 5), and the list shows the lane as Runaway (I10) | None |
 | Stop a Runaway lane's runtime | Runaway | Paused | Someone finds a Runaway lane | Whoever finds it, through the lane tool | The lane worktree exists. The runner seat records nobody, or the recorded runner is gone and no process of it remains (I12). The lane tool stops the runtime and empties the stale runner seat | Leave the lane as it is and say so (I9). A lane whose lane worktree is gone is a Leftover, and only teardown by name ends it |
-| Teardown | Prepared, Paused, Running or Runaway. When the finish rule is not met, only on the human's explicit word (I4) | Absent | The finish rule is met, or the human asks | Whoever runs housekeeping, or the human, all through one command | In this order, all before teardown destroys anything: no live runner or writer sits in a seat, the safe copy holds every change in the lane worktree, and the finish rule is met | Refuse, touch nothing, name the reason, and say whether the human's word can lift the refusal. The human's word cannot lift a refusal caused by a live runner or writer in a seat |
+| Teardown | Prepared, Paused, Running or Runaway. When the finish rule is not met, only on the human's explicit word (I4) | Absent | The finish rule is met, or the human asks | Whoever runs housekeeping, or the human, all through one command | In this order, all before teardown destroys anything: no live runner or writer sits in a seat, the safe copy holds every change in the lane worktree under the lane's name, and the finish rule is met | Refuse, touch nothing, name the reason, and say whether the human's word can lift the refusal. The human's word cannot lift a refusal caused by a live runner or writer in a seat |
 | Lane worktree removed outside teardown | Prepared, Paused, Running or Runaway | Leftover | A manual deletion, or another tool's removal | Anyone | Whatever can refuse the removal refuses it (I3). When nothing refuses it, the lane is a Leftover and the next list shows it (I10) | The removal does not happen, and the lane stays in its state |
 | Teardown by name | Leftover | Absent | Someone finds the Leftover in the list | Same as Teardown | The checks of Teardown, against whatever of the lane is left | Same as Teardown. Nothing else ends a Leftover |
 
@@ -166,7 +171,7 @@ Three steps are not edges, because none changes the lane's state.
 
 **Finish** is a predicate, not a transition (section 6). Whoever the finish rule names makes it true, and the lane tool reads it live whenever a check needs it.
 
-**Prep** is a step, not a transition of its own. It runs right after Create and as the first step of Resume, and an integration may add triggers, such as the start of a session in the lane. The lane tool checks that the lane is not running under another runner or under none. When it is, the lane tool warns, shows the seats and goes on (section 7.1).
+**Prep** is a step, not a transition of its own. It runs right after Create and Create from the safe copy, and as the first step of Resume, and an integration may add triggers, such as the start of a session in the lane. The lane tool checks that the lane is not running under another runner or under none. When it is, the lane tool warns, shows the seats and goes on (section 7.1).
 
 **Land** is outside the model (section 1, Landed). Whoever the project's review process allows lands a change, and the model sets no check on it.
 
