@@ -184,6 +184,19 @@ with self.record(name) as rec:
                 "start_base": base, "seats": {}, "idle_since": now()})
 ```
 
+### Create from the safe copy: a lane on kept work
+
+The safe copy is `origin`, and kept work is a branch there. `scripts/lane create <branch> --kept` opens a lane on it, under the branch's name. This is the model's Create from the safe copy. It is the one way to take a name that `create` refuses because `origin` still keeps work under it. `create_kept()` refuses before it touches anything when:
+
+- the name breaks the naming rule;
+- a lane, a Leftover or a registry entry uses the name here (`traces()`: a local branch, a directory, a worktree entry, lane data, a runtime, a roster entry);
+- GitHub cannot be asked (I9);
+- the finish rule is met: the name has pull requests and none is open (reopen one on GitHub, or start a new lane), or, under `branch-merged-into-default`, the base contains the kept work (start a new lane);
+- `origin` has no branch of that name. New work starts with `create`;
+- the starting point cannot be told.
+
+The base is the target of the branch's open pull request, or else the default branch, as for prep. The starting point is the merge base of `origin/<branch>` and `origin/<base>`, the last state of the main worktree that the kept work holds. When the two share no history, or open pull requests target different bases, the tool refuses and asks for `--start <commit>`. A named starting point must be in both histories. The worktree checks out `origin/<branch>` on a local branch that tracks it, so a push goes to the branch and its pull request. Prep follows, as after `create`. The finish rule and teardown do not change, and teardown keeps the remote branch, which is the kept work.
+
 ### Prep: warn, then catch up with the base
 
 The model requires prep to warn whoever reaches a lane that runs under someone else (section 7.1). This implementation adds a catch-up with the base branch. Prep runs after create, on `resume`, and from three hooks: `SessionStart` in a lane, `CwdChanged` into a lane, and `PostToolUse` after `EnterWorktree`. The third exists because entering an existing worktree by path fires neither `WorktreeCreate` nor `CwdChanged`.
@@ -545,8 +558,8 @@ Every invariant of the model is enforced in one or two named places. When you ch
 | I3 Only teardown removes a lane | Deny `ExitWorktree remove`. `WorktreeRemove` runs teardown. Leftovers stay visible | `pre_tool_use()`, `worktree_remove()` in `scripts/lane-hook` |
 | I4 A lane lives until its finish rule | `finish_met()` against `origin` (or GitHub pull requests, under the pull request rule) | `finish_met()` in `scripts/lane` |
 | I5 Nothing runs without a reason | Runtime only through `start()`. `SessionEnd` pauses. `stop` only for Runaway | `start()`, `stop()` in `scripts/lane`; `session_end()` in `scripts/lane-hook` |
-| I6 Identity is total and reversible | Ids derived from the name. `--lane-id` on the runtime. Roster in `.git/config`. Name reuse refused | `lane_id()`, `names()`, `create()` |
-| I7 The starting point is explicit | `start` and `start_base` written at create | `create()` |
+| I6 Identity is total and reversible | Ids derived from the name. `--lane-id` on the runtime. Roster in `.git/config`. Name reuse refused, except on purpose by `create --kept` | `lane_id()`, `names()`, `traces()`, `create()`, `create_kept()` |
+| I7 The starting point is explicit | `start` and `start_base` written at create. For kept work, the merge base with the base branch or `--start`, and a refusal when neither tells it | `create()`, `create_kept()` |
 | I8 The main worktree is not a workspace | `PreToolUse` guard on file tools and Bash shapes. Holes listed in `AGENTS.md` | `pre_tool_use()`, `shell_writes()` |
 | I9 When a check cannot be made, nothing guesses | `Refuse` on an unreadable `lanes.toml`, an unknown setting or an unreachable host | `load_config()`, `HostError` handling |
 | I10 Every Leftover and anomaly is visible | `inspect()` notes, each with its fix, printed by `lane list` | `inspect()`, `cmd_list()` |

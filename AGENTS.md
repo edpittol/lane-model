@@ -4,7 +4,7 @@ This project implements the lane model (`LANE-MODEL.md`). It also uses it: the m
 
 ## The loop
 
-1. `scripts/lane create <name>` makes the lane from a human brief. The name is two to four lowercase words joined by dashes, 3 to 40 characters. The command prints the worktree path.
+1. `scripts/lane create <name>` makes the lane from a human brief. The name is two to four lowercase words joined by dashes, 3 to 40 characters. The command prints the worktree path. When the brief asks for work on a branch that already exists on `origin`, `scripts/lane create <branch> --kept` opens the lane on that branch, under its name.
 2. Enter the lane with `EnterWorktree` (name or path). Work only there.
 3. Commit and push the lane branch.
 4. When the work is finished, land it from the lane: `scripts/lane prep <name>` catches the lane up with `origin/main`, then `git push origin <name>:main`. A rejected push means `main` moved: prep again and retry. Never force the push.
@@ -15,6 +15,7 @@ This project implements the lane model (`LANE-MODEL.md`). It also uses it: the m
 | Command | Does |
 |---|---|
 | `create <name>` | Lane worktree from the Git host's base, then prep |
+| `create <name> --kept [--start <commit>]` | Lane worktree on the branch `origin` keeps under the name, tracking it, then prep. `--start` names the starting point when the tool cannot tell it |
 | `prep <name>` | Warn if the lane runs elsewhere, then sync with the base |
 | `start <name>` / `resume <name>` | Start the runtime and become its runner. `resume` preps first |
 | `pause [<name> \| --all]` | Stop the runtimes you run. Data stays |
@@ -27,6 +28,7 @@ This project implements the lane model (`LANE-MODEL.md`). It also uses it: the m
 
 ## Rules for the agent
 
+- Plan a change to the model (`LANE-MODEL.md`) from the model alone. Leave the tool (`scripts/lane`) out of the plan: what it does today neither limits nor shapes the change.
 - A refusal stands. A taken seat stays with whoever sits in it: make the change in another lane. Never take over a runtime, never edit around a refusal.
 - Start a runtime only when you need the running application, and pause it when the work is on `main`. Session end pauses what you still run.
 - `teardown --discard` and `teardown --unfinished` are the human's word, one lane at a time. Never pass them unprompted. `--unfinished` does not discard work, and `--discard` does not skip the finish rule.
