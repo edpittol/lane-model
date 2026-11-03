@@ -522,13 +522,34 @@ class Project:
         return "Replayed", f"replayed {name} onto {base}{pub}"
 
     # ----- operations
-    def create(self, name):
-        self.check_name(name)
+    def traces(self, name):
+        """What a lane, a Leftover or a registry entry under this name leaves here."""
         clash = []
         if self.git("show-ref", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0: clash.append("a local branch")
         if self.wt(name).exists(): clash.append("a directory")
+        if self.admin_dir(name): clash.append("a worktree entry")
         if self.data(name).exists(): clash.append("lane data")
+        if self.lane_procs(name): clash.append("a runtime up")
         if self.git("config", "--get", f"lane.{name}.created").returncode == 0: clash.append("a roster entry")
+        return clash
+
+    def open_lane(self, name, ref, start, base, track):
+        a = self.git("worktree", "add", "--track" if track else "--no-track", "-b", name, str(self.wt(name)), ref)
+        if a.returncode:
+            raise Refuse(f"git worktree add failed: {a.stderr.strip()}")
+        self.git("config", f"lane.{name}.created", now())
+        with self.record(name) as rec:
+            rec.update({"name": name, "created": now(), "start": start,
+                        "start_base": base, "seats": {}, "idle_since": now()})
+        say(f"created {name} from the kept work {ref}, starting point {start[:10]} on {base}" if track
+            else f"created {name} from {ref} at {start[:10]}")
+        out, line = self.sync(name)
+        say(f"prep: {out}: {line}")
+        return self.wt(name)
+
+    def create(self, name):
+        self.check_name(name)
+        clash = self.traces(name)
         try:
             base = self.repo_facts()["defaultBranchRef"]["name"]
             prs = self.prs(name)
@@ -542,22 +563,58 @@ class Project:
             raise Refuse(f"cannot ask origin for a branch named {name}: {ls.stderr.strip()}; uniqueness is never guessed (I6, I9)")
         if ls.stdout.strip(): clash.append("a branch on origin")
         if clash:
-            raise Refuse(f"{name} is not unique: it already has {', '.join(clash)}. Names are unique and never reused while anything of the lane remains, on the Git host included. Choose another name")
+            kept = f", or open a lane on the kept work with `lane create {name} --kept`" if ls.stdout.strip() else ""
+            raise Refuse(f"{name} is not unique: it already has {', '.join(clash)}. Names are unique and never reused while anything of the lane remains, on the Git host included. Choose another name{kept}")
         f = self.git("fetch", "origin", base)
         if f.returncode:
             raise Refuse(f"cannot fetch origin/{base}: {f.stderr.strip()}")
         start = self.git("rev-parse", f"origin/{base}").stdout.strip()
-        a = self.git("worktree", "add", "--no-track", "-b", name, str(self.wt(name)), f"origin/{base}")
-        if a.returncode:
-            raise Refuse(f"git worktree add failed: {a.stderr.strip()}")
-        self.git("config", f"lane.{name}.created", now())
-        with self.record(name) as rec:
-            rec.update({"name": name, "created": now(), "start": start,
-                        "start_base": base, "seats": {}, "idle_since": now()})
-        say(f"created {name} from origin/{base} at {start[:10]}")
-        out, line = self.sync(name)
-        say(f"prep: {out}: {line}")
-        return self.wt(name)
+        return self.open_lane(name, f"origin/{base}", start, base, track=False)
+
+    def create_kept(self, name, start=None):
+        """Create from the safe copy: a lane on the branch origin keeps under the name, tracking it. Origin gets no new branch."""
+        self.check_name(name)
+        if clash := self.traces(name):
+            raise Refuse(f"{name} is already in use here: it has {', '.join(clash)}. A lane on kept work needs a name no lane, Leftover or registry entry uses; `lane list` shows what remains and its fix")
+        try:
+            facts = self.repo_facts()
+            prs = self.prs(name)
+        except HostError as e:
+            raise Refuse(f"{e}; the kept work, its starting point and the finish rule are never guessed (I7, I9)")
+        if self.finish_met(prs):
+            done = ", ".join(f"#{p['number']} ({p['state'].lower()})" for p in prs)
+            raise Refuse(f"the finish rule of {name} is met: pull request {done}, none open. "
+                         "Start a new lane with `lane create <new-name>`, or reopen the pull request on the Git host first")
+        ls = self.git("ls-remote", "--heads", "origin", f"refs/heads/{name}")
+        if ls.returncode:
+            raise Refuse(f"cannot ask origin for a branch named {name}: {ls.stderr.strip()}; nothing guesses (I9)")
+        if not ls.stdout.strip():
+            raise Refuse(f"origin keeps no branch named {name}, so there is no kept work to open. New work starts with `lane create <name>`")
+        bases = sorted({p["baseRefName"] for p in prs if p["state"] == "OPEN"})
+        if len(bases) > 1 and not start:
+            raise Refuse(f"{name} has open pull requests into {', '.join(bases)}, so its starting point cannot be told; "
+                         "nothing guesses (I7, I9). Name it with --start <commit>")
+        base = bases[0] if bases else facts["defaultBranchRef"]["name"]
+        for ref in (name, base):
+            f = self.git("fetch", "origin", f"+refs/heads/{ref}:refs/remotes/origin/{ref}")
+            if f.returncode:
+                raise Refuse(f"cannot fetch origin/{ref}: {f.stderr.strip()}; nothing guesses (I9)")
+        kept, ob = f"origin/{name}", f"origin/{base}"
+        if start:
+            r = self.git("rev-parse", "--verify", "-q", f"{start}^{{commit}}")
+            if r.returncode:
+                raise Refuse(f"--start {start!r} names no commit")
+            point = r.stdout.strip()
+            for ref, what in ((ob, f"the main worktree's history ({ob})"), (kept, f"the kept work {kept}")):
+                if self.git("merge-base", "--is-ancestor", point, ref).returncode:
+                    raise Refuse(f"--start {start} is not in {what}, so the kept work did not start from it (I7)")
+        else:
+            mb = self.git("merge-base", ob, kept)
+            if mb.returncode:
+                raise Refuse(f"{kept} shares no history with {ob}, so its starting point cannot be told; "
+                             "nothing guesses (I7, I9). Name it with --start <commit>")
+            point = mb.stdout.strip()
+        return self.open_lane(name, kept, point, base, track=True)
 
     def prep(self, name, flatten=False, actor=None):
         self.require_wt(name)
@@ -861,7 +918,9 @@ def main(argv=None):
 
     nm = (("name",), {})
     who = [(("--as",), {"dest": "kind", "choices": ["person", "script", "session"]}), (("--label",), {})]
-    add("create", "create a lane from a brief's name", nm)
+    add("create", "create a lane from a brief's name, or on kept work with --kept", nm,
+        (("--kept",), {"action": "store_true", "help": "open the lane on the branch origin keeps under the name (Create from the safe copy)"}),
+        (("--start",), {"help": "with --kept: the commit of the base the kept work started from, when the tool cannot tell it"}))
     add("prep", "prepare a lane: warn if it runs, then sync with base", nm, (("--flatten",), {"action": "store_true"}))
     add("start", "start the runtime (you become its runner)", nm, *who)
     add("resume", "prep, then start", nm, (("--flatten",), {"action": "store_true"}), *who)
@@ -879,7 +938,9 @@ def main(argv=None):
     try:
         P = Project()
         if a.cmd == "create":
-            print(P.create(a.name))
+            if a.start and not a.kept:
+                raise Refuse("--start goes with --kept; a new lane starts from the base")
+            print(P.create_kept(a.name, a.start) if a.kept else P.create(a.name))
         elif a.cmd == "prep":
             out, line = P.prep(a.name, a.flatten, actor_from_env()); print(f"{out}: {line}")
             return 0 if out != "Held" else 1

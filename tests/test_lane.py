@@ -121,6 +121,114 @@ class Create(Base):
         (self.main / "lanes.toml").write_text("[lane]\nruntime='always'\n")
         self.assertIn("cannot be used", self.refused("create", "alpha-one"))
 
+    def test_a_branch_on_origin_points_to_kept(self):
+        sh("git", "push", "-q", "origin", "main:refs/heads/old-branch", cwd=self.main)
+        self.assertIn("lane create old-branch --kept", self.refused("create", "old-branch"))
+        self.assertIn("--start goes with --kept", self.refused("create", "alpha-one", "--start", "main"))
+
+
+class CreateKept(Base):
+    """Create from the safe copy: kept work is a branch on origin."""
+
+    def setUp(self):
+        super().setUp()
+        self.other = self.tmp / "other"
+        sh("git", "clone", "-q", str(self.remote), str(self.other))
+        for k, v in (("user.name", "o"), ("user.email", "o@o")):
+            sh("git", "config", k, v, cwd=self.other)
+
+    def keep(self, branch, fname="kept.txt", base="main", orphan=False):
+        """Someone else pushes work to origin under a branch name."""
+        o = self.other
+        sh("git", "fetch", "-q", "origin", cwd=o)
+        sh("git", "checkout", "-q", *(["--orphan", branch] if orphan else ["-B", branch, f"origin/{base}"]), cwd=o)
+        (o / fname).write_text("kept\n")
+        sh("git", "add", "-A", cwd=o); sh("git", "commit", "-qm", f"kept {fname}", cwd=o)
+        sh("git", "push", "-q", "origin", branch, cwd=o)
+        return sh("git", "rev-parse", "HEAD", cwd=o).stdout.strip()
+
+    def land_on_main(self, fname="later.txt"):
+        o = self.other
+        sh("git", "fetch", "-q", "origin", cwd=o); sh("git", "checkout", "-q", "-B", "main", "origin/main", cwd=o)
+        (o / fname).write_text("later\n")
+        sh("git", "add", "-A", cwd=o); sh("git", "commit", "-qm", f"land {fname}", cwd=o)
+        sh("git", "push", "-q", "origin", "main", cwd=o)
+
+    def record(self, name):
+        ad = next(d for d in (self.main / ".git" / "worktrees").iterdir() if (d / "gitdir").read_text().strip().endswith(f"/{name}/.git"))
+        return json.loads((ad / "lane.json").read_text())
+
+    def assert_nothing_left(self, name):
+        self.assertFalse(self.wt(name).exists())
+        self.assertEqual(self.git("branch", "--list", name), "")
+        self.assertEqual(sh("git", "config", "--get", f"lane.{name}.created", cwd=self.main, check=False).returncode, 1)
+
+    def test_lane_on_kept_work_tracks_it_and_pushes_to_its_pull_request(self):
+        fork = self.git("rev-parse", "origin/main")
+        tip = self.keep("old-work")
+        self.prs("old-work", {"number": 5, "state": "OPEN", "headRefOid": tip, "baseRefName": "main", "url": ""})
+        self.ok("create", "old-work", "--kept")
+        self.assertEqual(self.state("old-work"), "Prepared")
+        self.assertEqual(self.git("rev-parse", "old-work"), tip)
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "old-work@{upstream}"), "origin/old-work")
+        rec = self.record("old-work")
+        self.assertEqual((rec["start"], rec["start_base"]), (fork, "main"))
+        self.commit_in("old-work", push=True)
+        self.assertEqual(self.git("rev-parse", "origin/old-work"), self.git("rev-parse", "old-work"))
+        head = self.git("rev-parse", "old-work")
+        self.prs("old-work", {"number": 5, "state": "MERGED", "headRefOid": head, "baseRefName": "main", "url": ""})
+        self.ok("teardown", "old-work")
+        self.assert_nothing_left("old-work")
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/old-work").split()[0], head)
+
+    def test_starting_point_is_where_the_kept_work_left_the_base(self):
+        fork = self.git("rev-parse", "origin/main")
+        self.keep("old-work")
+        self.land_on_main()
+        err = self.ok("create", "old-work", "--kept").stderr
+        self.assertIn("prep: Merged", err)
+        self.assertEqual(self.record("old-work")["start"], fork)
+
+    def test_missing_kept_work_points_to_create(self):
+        self.assertIn("lane create <name>", self.refused("create", "no-such-work", "--kept"))
+        self.assert_nothing_left("no-such-work")
+
+    def test_met_finish_rule_is_refused(self):
+        tip = self.keep("done-work")
+        self.prs("done-work", {"number": 3, "state": "MERGED", "headRefOid": tip, "baseRefName": "main", "url": ""})
+        err = self.refused("create", "done-work", "--kept")
+        self.assertIn("finish rule of done-work is met", err)
+        self.assertIn("reopen the pull request", err)
+        self.assert_nothing_left("done-work")
+
+    def test_name_in_use_or_breaking_the_rule_is_refused(self):
+        self.ok("create", "alpha-one")
+        self.commit_in("alpha-one", push=True)
+        self.assertIn("already in use here", self.refused("create", "alpha-one", "--kept"))
+        sh("git", "push", "-q", "origin", "main:refs/heads/Bad_Name", cwd=self.main)
+        self.assertIn("naming rule", self.refused("create", "Bad_Name", "--kept"))
+
+    def test_host_down_guesses_nothing(self):
+        self.keep("old-work")
+        (self.gh / "DOWN").write_text("")
+        self.assertIn("never guessed", self.refused("create", "old-work", "--kept"))
+        self.assert_nothing_left("old-work")
+
+    def test_a_starting_point_it_cannot_tell_is_refused_unless_named(self):
+        self.keep("loose-work", orphan=True)
+        self.assertIn("--start <commit>", self.refused("create", "loose-work", "--kept"))
+        self.assertIn("is not in the kept work", self.refused("create", "loose-work", "--kept", "--start", "origin/main"))
+        self.assert_nothing_left("loose-work")
+        fork = self.git("rev-parse", "origin/main")
+        sh("git", "push", "-q", "origin", "main:refs/heads/release", cwd=self.main)
+        tip = self.keep("two-prs")
+        self.prs("two-prs", *({"number": n, "state": "OPEN", "headRefOid": tip, "baseRefName": b, "url": ""}
+                              for n, b in ((8, "main"), (9, "release"))))
+        self.assertIn("cannot be told", self.refused("create", "two-prs", "--kept"))
+        self.assert_nothing_left("two-prs")
+        self.ok("create", "two-prs", "--kept", "--start", fork)
+        self.assertEqual(self.record("two-prs")["start"], fork)
+
 
 class Runtime(Base):
     def setUp(self):

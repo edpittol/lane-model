@@ -33,6 +33,7 @@ The lane tool needs `origin` on GitHub. The repository should allow squash and m
 
 ```
 scripts/lane create fix-login-redirect
+scripts/lane create old-branch --kept         # a lane on a branch origin already keeps
 scripts/lane start fix-login-redirect
 scripts/lane list
 scripts/lane pause fix-login-redirect

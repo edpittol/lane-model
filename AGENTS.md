@@ -4,7 +4,7 @@ This project implements the lane model (`LANE-MODEL.md`). It also uses it: the m
 
 ## The loop
 
-1. `scripts/lane create <name>` makes the lane from a human brief. The name is two to four lowercase words joined by dashes, 3 to 40 characters. The command prints the worktree path.
+1. `scripts/lane create <name>` makes the lane from a human brief. The name is two to four lowercase words joined by dashes, 3 to 40 characters. The command prints the worktree path. When the brief asks for work on a branch that already exists on `origin`, `scripts/lane create <branch> --kept` opens the lane on that branch, under its name.
 2. Enter the lane with `EnterWorktree` (name or path). Work only there.
 3. Commit and push the lane branch.
 4. When the work is finished, land it from the lane: `scripts/lane prep <name>` catches the lane up with `origin/main`, then `git push origin <name>:main`. A rejected push means `main` moved: prep again and retry. Never force the push.
@@ -15,6 +15,7 @@ This project implements the lane model (`LANE-MODEL.md`). It also uses it: the m
 | Command | Does |
 |---|---|
 | `create <name>` | Lane worktree from the Git host's base, then prep |
+| `create <name> --kept [--start <commit>]` | Lane worktree on the branch `origin` keeps under the name, tracking it, then prep. `--start` names the starting point when the tool cannot tell it |
 | `prep <name>` | Warn if the lane runs elsewhere, then sync with the base |
 | `start <name>` / `resume <name>` | Start the runtime and become its runner. `resume` preps first |
 | `pause [<name> \| --all]` | Stop the runtimes you run. Data stays |
